@@ -5,4 +5,4 @@ app = FastAPI()
 
 @app.get("/")
 def main():
-    return {"op": "ping"}
+    return {"message": "ok"}
