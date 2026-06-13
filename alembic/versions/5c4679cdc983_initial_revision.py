@@ -1,0 +1,113 @@
+"""initial revision
+
+Revision ID: 5c4679cdc983
+Revises: 
+Create Date: 2026-06-12 23:47:07.384821
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+# revision identifiers, used by Alembic.
+revision: str = '5c4679cdc983'
+down_revision: Union[str, Sequence[str], None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    op.create_table('applications',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_applications'))
+    )
+    op.create_table('endpoints',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('application_id', sa.UUID(), nullable=False),
+    sa.Column('url', sa.Text(), nullable=False),
+    sa.Column('secret', sa.Text(), nullable=False),
+    sa.Column('previous_secret', sa.Text(), nullable=True),
+    sa.Column('previous_secret_expires_at', postgresql.TIMESTAMP(timezone=True), nullable=True),
+    sa.Column('status', sa.Text(), nullable=False),
+    sa.Column('consecutive_failures', sa.Integer(), nullable=False),
+    sa.Column('disabled_at', postgresql.TIMESTAMP(timezone=True), nullable=True),
+    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("status IN ('enabled', 'disabled')", name=op.f('ck_endpoints_status_valid')),
+    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_endpoints_application_id_applications'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_endpoints'))
+    )
+    op.create_table('event_types',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('application_id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_event_types_application_id_applications'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_event_types')),
+    sa.UniqueConstraint('application_id', 'name', name=op.f('uq_event_types_application_id'))
+    )
+    op.create_table('endpoint_event_types',
+    sa.Column('endpoint_id', sa.UUID(), nullable=False),
+    sa.Column('event_type_id', sa.UUID(), nullable=False),
+    sa.ForeignKeyConstraint(['endpoint_id'], ['endpoints.id'], name=op.f('fk_endpoint_event_types_endpoint_id_endpoints'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['event_type_id'], ['event_types.id'], name=op.f('fk_endpoint_event_types_event_type_id_event_types'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('endpoint_id', 'event_type_id', name=op.f('pk_endpoint_event_types'))
+    )
+    op.create_table('events',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('application_id', sa.UUID(), nullable=False),
+    sa.Column('event_type_id', sa.UUID(), nullable=False),
+    sa.Column('payload', sa.Text(), nullable=False),
+    sa.Column('idempotency_key', sa.Text(), nullable=True),
+    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_events_application_id_applications'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['event_type_id'], ['event_types.id'], name=op.f('fk_events_event_type_id_event_types')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_events')),
+    sa.UniqueConstraint('application_id', 'idempotency_key', name=op.f('uq_events_application_id'))
+    )
+    op.create_table('deliveries',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('event_id', sa.UUID(), nullable=False),
+    sa.Column('endpoint_id', sa.UUID(), nullable=False),
+    sa.Column('status', sa.Text(), nullable=False),
+    sa.Column('attempt_count', sa.Integer(), nullable=False),
+    sa.Column('next_attempt_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("status IN ('pending', 'retrying', 'succeeded', 'exhausted', 'discarded')", name=op.f('ck_deliveries_status_valid')),
+    sa.ForeignKeyConstraint(['endpoint_id'], ['endpoints.id'], name=op.f('fk_deliveries_endpoint_id_endpoints'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['event_id'], ['events.id'], name=op.f('fk_deliveries_event_id_events'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_deliveries'))
+    )
+    op.create_index('ix_deliveries_claim', 'deliveries', ['next_attempt_at'], unique=False, postgresql_where="status IN ('pending', 'retrying')")
+    op.create_table('delivery_attempts',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('delivery_id', sa.UUID(), nullable=False),
+    sa.Column('attempt_number', sa.Integer(), nullable=False),
+    sa.Column('response_status', sa.Integer(), nullable=True),
+    sa.Column('response_body', sa.Text(), nullable=True),
+    sa.Column('error', sa.Text(), nullable=True),
+    sa.Column('latency_ms', sa.Integer(), nullable=True),
+    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['delivery_id'], ['deliveries.id'], name=op.f('fk_delivery_attempts_delivery_id_deliveries'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_delivery_attempts'))
+    )
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    op.drop_table('delivery_attempts')
+    op.drop_index('ix_deliveries_claim', table_name='deliveries', postgresql_where="status IN ('pending', 'retrying')")
+    op.drop_table('deliveries')
+    op.drop_table('events')
+    op.drop_table('endpoint_event_types')
+    op.drop_table('event_types')
+    op.drop_table('endpoints')
+    op.drop_table('applications')
+    # ### end Alembic commands ###

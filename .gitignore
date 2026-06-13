@@ -1,0 +1,8 @@
+# Environment
+.env
+.venv
+
+# Build
+*.pyc
+__pycache__
+.ruff_cache
