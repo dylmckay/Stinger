@@ -1,6 +1,6 @@
 """initial revision
 
-Revision ID: 5c4679cdc983
+Revision ID: 0001
 Revises: 
 Create Date: 2026-06-12 23:47:07.384821
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '5c4679cdc983'
+revision: str = '0001'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -68,7 +68,7 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['application_id'], ['applications.id'], name=op.f('fk_events_application_id_applications'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['event_type_id'], ['event_types.id'], name=op.f('fk_events_event_type_id_event_types')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_events')),
-    sa.UniqueConstraint('application_id', 'idempotency_key', name=op.f('uq_events_application_id'))
+    sa.UniqueConstraint('application_id', 'idempotency_key', name=op.f('uq_events_application_id_idempotency_key'))
     )
     op.create_table('deliveries',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -79,6 +79,7 @@ def upgrade() -> None:
     sa.Column('next_attempt_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('locked_by', sa.Text(), nullable=True),
     sa.CheckConstraint("status IN ('pending', 'retrying', 'succeeded', 'exhausted', 'discarded')", name=op.f('ck_deliveries_status_valid')),
     sa.ForeignKeyConstraint(['endpoint_id'], ['endpoints.id'], name=op.f('fk_deliveries_endpoint_id_endpoints'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['event_id'], ['events.id'], name=op.f('fk_deliveries_event_id_events'), ondelete='CASCADE'),

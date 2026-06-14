@@ -90,7 +90,7 @@ class EndpointEventType(Base):
 
 class Event(TimestampMixin, Base):
     __tablename__ = "events"
-    __table_args__ = (UniqueConstraint("application_id", "idempotency_key"),)
+    __table_args__ = (UniqueConstraint("application_id", "idempotency_key", name="uq_events_application_id_idempotency_key"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=_uuid7)
     application_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
@@ -120,6 +120,7 @@ class Delivery(TimestampMixin, Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class DeliveryAttempt(TimestampMixin, Base):
