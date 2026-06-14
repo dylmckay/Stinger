@@ -43,7 +43,7 @@ async def claim_deliveries(session: AsyncSession, *, worker_id: str, limit: int,
     if limit <= 0:
         return []
 
-    # 1. Define the subquery to find due rows
+    # 1. Define the query to find due rows
     due_query = (
         select(Delivery.id)
         .where(
