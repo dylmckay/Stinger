@@ -4,7 +4,6 @@ from sqlalchemy import text
 from tenacity import after_log, before_log, retry, stop_after_attempt, wait_fixed
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
-from starlette.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core import limiter
@@ -43,14 +42,6 @@ def wait_for_db(db_engine=engine) -> None:
 app = FastAPI(title="Stinger", version="0.0.1")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
