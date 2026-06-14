@@ -63,6 +63,6 @@ async def main():
     return JSONResponse(content=json.loads(json_bytes))
 
 
-@app.get("/health")
-async def health():
+@app.get("/healthz")
+async def healthz():
     return {"status": "healthy"}
