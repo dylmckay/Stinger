@@ -85,7 +85,7 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['event_id'], ['events.id'], name=op.f('fk_deliveries_event_id_events'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_deliveries'))
     )
-    op.create_index('ix_deliveries_claim', 'deliveries', ['next_attempt_at'], unique=False, postgresql_where="status IN ('pending', 'retrying')")
+    op.create_index('ix_deliveries_claim', 'deliveries', ['next_attempt_at', 'id'], unique=False, postgresql_where="status IN ('pending', 'retrying')")
     op.create_table('delivery_attempts',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('delivery_id', sa.UUID(), nullable=False),

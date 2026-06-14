@@ -109,6 +109,7 @@ class Delivery(TimestampMixin, Base):
         Index(
             "ix_deliveries_claim",
             "next_attempt_at",
+            "id",
             postgresql_where="status IN ('pending', 'retrying')",
         ),
     )
