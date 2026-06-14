@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from app.core import rlimiter
+from app.core import limiter
 from app.core.db import engine
 
 
@@ -40,7 +40,7 @@ def wait_for_db(db_engine=engine) -> None:
 
 
 app = FastAPI(title="Stinger", version="0.0.1")
-app.state.limiter = rlimiter
+app.state.limiter = limiter.rlimiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.exception_handler(Exception)
