@@ -43,8 +43,8 @@ async def claim_deliveries(session: AsyncSession, *, worker_id: str, limit: int,
     if limit <= 0:
         return []
 
-    # 1. Define the query to find due rows
-    due_query = (
+    # 1. Define the subquery to find due rows
+    due_subquery = (
         select(Delivery.id)
         .where(
             Delivery.status.in_(_CLAIMABLE),
@@ -55,13 +55,10 @@ async def claim_deliveries(session: AsyncSession, *, worker_id: str, limit: int,
         .with_for_update(skip_locked=True)
     )
 
-    # 2. Wrap it in a CTE to lock down the execution order & LIMIT behavior
-    due_cte = due_query.cte("due_deliveries")
-
-    # 3. Construct the atomic UPDATE query
+    # 2. Execute the atomic UPDATE query directly using the subquery
     claim = (
         update(Delivery)
-        .where(Delivery.id.in_(select(due_cte.c.id)))
+        .where(Delivery.id.in_(due_subquery))
         .values(
             next_attempt_at=func.now() + timedelta(seconds=lease_seconds),
             locked_by=worker_id,
@@ -70,7 +67,6 @@ async def claim_deliveries(session: AsyncSession, *, worker_id: str, limit: int,
         .execution_options(synchronize_session=False)
     )
 
-    # Use session.scalars() to correctly yield ORM objects from UPDATE RETURNING
     result = await session.scalars(claim)
     claimed = result.all()
 
