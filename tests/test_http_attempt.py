@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import httpx
 import pytest
+import pytest_asyncio
 
 from app.delivery.ssrf import resolve_and_validate, SSRFError
 from app.delivery.http import attempt_delivery
@@ -52,11 +53,11 @@ class _Handler(BaseHTTPRequestHandler):
 def local_server():
     srv = HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://localhost:{srv.server_address[1]}"
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
     srv.shutdown()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     async with httpx.AsyncClient() as c:
         yield c
