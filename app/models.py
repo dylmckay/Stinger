@@ -134,3 +134,16 @@ class DeliveryAttempt(TimestampMixin, Base):
     response_body: Mapped[str | None] = mapped_column(Text)       # truncated at write time
     error: Mapped[str | None] = mapped_column(Text)               # timeout, DNS, SSRF block...
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+
+
+class ApiKey(TimestampMixin, Base):
+    __tablename__ = "api_keys"
+    __table_args__ = (UniqueConstraint("key_hash", name="uq_api_keys_key_hash"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=_uuid7)
+    application_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
+    key_hash: Mapped[str] = mapped_column(Text, nullable=False)   # sha256 hex of the full key
+    prefix: Mapped[str] = mapped_column(Text, nullable=False)     # non-secret, for display
+    name: Mapped[str | None] = mapped_column(Text)
+    last_used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
