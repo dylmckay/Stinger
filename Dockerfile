@@ -1,5 +1,5 @@
 # Stage 1: Builder (Uses full Bookworm to compile uvloop/asyncpg)
-FROM python:3.14-bookworm as builder
+FROM python:3.14-bookworm AS builder
 
 WORKDIR /app
 
