@@ -1,0 +1,90 @@
+"""The HTTP attempt: POST a payload to an endpoint and classify the outcome.
+
+Produces the AttemptResult that record_attempt consumes. All the delivery-side
+HTTP discipline lives here: a hard timeout ceiling, redirects disabled, the
+SSRF guard with IP pinning, and the mapping from wire result to
+(succeeded, retryable). Signing is layered on top via `extra_headers` — this
+function does not know or care how the signature was produced.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Mapping
+
+import httpx
+
+from app.delivery.record import AttemptResult, MAX_RESPONSE_BODY
+from app.delivery.ssrf import SSRFError, resolve_and_validate
+
+DEFAULT_TIMEOUT = httpx.Timeout(connect=3.0, read=10.0, write=10.0, pool=5.0)
+OVERALL_DEADLINE_S = 15.0                    # hard wall-clock cap < lease (30s)
+NON_RETRYABLE_STATUSES = frozenset({410})    # 410 Gone: consumer says stop
+
+
+async def attempt_delivery(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    payload: str,
+    message_id: str,
+    extra_headers: Mapping[str, str] | None = None,
+    allow_private: bool = False,
+    timeout: httpx.Timeout = DEFAULT_TIMEOUT,
+) -> AttemptResult:
+    start = time.perf_counter()
+
+    def elapsed_ms() -> int:
+        return int((time.perf_counter() - start) * 1000)
+
+    # 1. SSRF guard: resolve, validate every address, pin one.
+    try:
+        target = await resolve_and_validate(url, allow_private=allow_private)
+    except SSRFError as e:
+        return AttemptResult(
+            succeeded=False, retryable=False,
+            error=f"blocked: {e}", latency_ms=elapsed_ms(),
+        )
+
+    headers = {
+        "content-type": "application/json",
+        "user-agent": "Stinger/0.1",
+        "webhook-id": message_id,
+        "host": target.host_header,          # preserve vhost despite pinning
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    # Connect to the pinned IP; preserve hostname for TLS SNI.
+    request = client.build_request(
+        "POST", target.connect_url,
+        content=payload, headers=headers, timeout=timeout,
+        extensions={"sni_hostname": target.host},
+    )
+
+    # 2. Execute under a hard overall deadline.
+    try:
+        async with asyncio.timeout(OVERALL_DEADLINE_S):
+            resp = await client.send(request, follow_redirects=False)
+    except (httpx.TimeoutException, TimeoutError):
+        return AttemptResult(False, retryable=True, error="timeout", latency_ms=elapsed_ms())
+    except httpx.HTTPError as e:
+        return AttemptResult(
+            False, retryable=True,
+            error=f"{type(e).__name__}: {e}", latency_ms=elapsed_ms(),
+        )
+
+    body = resp.text[:MAX_RESPONSE_BODY]
+    latency = elapsed_ms()
+
+    # 3. Classify.
+    if 200 <= resp.status_code < 300:
+        return AttemptResult(
+            True, response_status=resp.status_code,
+            response_body=body, latency_ms=latency,
+        )
+    return AttemptResult(
+        False,
+        retryable=resp.status_code not in NON_RETRYABLE_STATUSES,
+        response_status=resp.status_code, response_body=body, latency_ms=latency,
+    )
