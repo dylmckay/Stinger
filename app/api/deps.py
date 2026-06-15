@@ -1,26 +1,27 @@
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, Header
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.auth import authenticate
 from app.models import Application
 
-_engine = create_async_engine(get_settings().DATABASE_URL, pool_size=10, max_overflow=5)
-_Session = async_sessionmaker(_engine, expire_on_commit=False)
+
+_bearer = HTTPBearer(auto_error=False)
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    # publish_event commits its own transaction; this dependency only scopes
-    # the session lifetime, it does not commit.
-    async with _Session() as session:
-        yield session
+async def get_session() -> AsyncIterator[AsyncSession]: # overridden at app startup
+    raise NotImplementedError("wire get_session in app startup")
 
 
 async def current_application(
-    x_api_key: str = Header(...),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     session: AsyncSession = Depends(get_session),
 ) -> Application:
-    # SEAM: real auth hashes the presented key, looks it up, maps to an app.
-    # API-key management (generation, hashing, rotation) is its own piece.
-    raise NotImplementedError("API-key auth pending")
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token", headers={"WWW-Authenticate": "Bearer"})
+    application = await authenticate(session, creds.credentials)
+    if application is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or revoked APi key", headers={"WWW-Authenticate": "Bearer"})
+    return application
