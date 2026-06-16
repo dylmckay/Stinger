@@ -9,6 +9,11 @@ WORKDIR /app
 
 # 1) Dependencies first — cached unless the lockfile changes.
 COPY pyproject.toml uv.lock ./
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
@@ -19,6 +24,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 
 FROM python:3.14-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 1000 stinger
 WORKDIR /app
 COPY --from=builder --chown=stinger:stinger /app /app
