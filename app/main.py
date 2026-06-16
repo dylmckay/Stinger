@@ -54,9 +54,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/")
 async def main():
     payload = {
-        "message": "Welcome to Stinger! 🐝",
-        "docs": "/docs",
-        "redoc": "/redoc"
+        "message": "Welcome to Stinger! 🐝"
         }
     # ensures_ascii=True forces emoji conversion to \uD83D\uDC1D to ensure compatibility with legacy systems
     json_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
