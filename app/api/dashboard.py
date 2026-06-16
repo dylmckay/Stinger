@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import reads
 from app.api.deps import current_application, get_session
 from app.models import Application
+from app.delivery.record import reenable_endpoint
 
 router = APIRouter(prefix="/api/v1", tags=["dashboard"])
 
@@ -100,3 +101,15 @@ async def replay(
     if new_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "delivery not found")
     return {"delivery_id": new_id}
+
+
+@router.post("/endpoints/{endpoint_id}/reenable", status_code=status.HTTP_200_OK)
+async def reenable(
+    endpoint_id: UUID,
+    application: Application = Depends(current_application),
+    session: AsyncSession = Depends(get_session),
+):
+    ok = await reenable_endpoint(session, application_id=application.id, endpoint_id=endpoint_id)
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "endpoint not found")
+    return {"status": "enabled"}

@@ -1,18 +1,21 @@
 """Record the outcome of a delivery attempt, closing the lease.
 
 Second half of the lease lifecycle (claim -> attempt -> record). Runs as one
-short transaction and does three things atomically:
+short transaction and does four things atomically:
 
   1. Advances the delivery's state machine: succeeded, or retrying with the
      next backoff time, or exhausted once the retry budget is spent.
-  2. Appends an immutable DeliveryAttempt row (the audit timeline).
-  3. Releases the lease by clearing locked_by, restoring the invariant
+  2. Updates the endpoint's circuit-breaker counter (reset on success,
+     increment on failure) and trips it to disabled past the threshold.
+  3. Appends an immutable DeliveryAttempt row (the audit timeline).
+  4. Releases the lease by clearing locked_by, restoring the invariant
      `locked_by IS NOT NULL`  <=>  "a worker holds this row in flight".
 
 A compare-and-swap guard (WHERE locked_by = :worker_id) makes this safe
 against the lease-expiry race: if this worker overran its lease and another
 worker already re-claimed the row, the UPDATE matches zero rows and we discard
-the result rather than clobbering the new owner's state. The HTTP attempt was
+the result rather than clobbering the new owner's state (and the endpoint
+counter is left untouched — the new owner records it). The HTTP attempt was
 at-least-once anyway, so a wasted duplicate POST is expected and handled by
 consumer-side dedupe.
 """
@@ -25,7 +28,7 @@ from datetime import timedelta
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Delivery, DeliveryAttempt, DeliveryStatus
+from app.models import Delivery, DeliveryAttempt, DeliveryStatus, Endpoint, EndpointStatus
 
 # The retry schedule IS the documented delivery contract: one wait per entry,
 # applied between attempts. N entries -> N+1 total attempts before exhaustion.
@@ -38,8 +41,9 @@ RETRY_SCHEDULE: tuple[timedelta, ...] = (
     timedelta(hours=4),
     timedelta(hours=12),
 )
-JITTER_FRACTION = 0.2          # +/-20%, de-synchronizes a simultaneous failure batch
-MAX_RESPONSE_BODY = 2048       # chars of response body retained on an attempt row
+JITTER_FRACTION = 0.2           # +/-20%, de-synchronizes a simultaneous failure batch
+MAX_RESPONSE_BODY = 2048        # chars of response body retained on an attempt row
+DEFAULT_FAILURE_THRESHOLD = 20  # consecutive endpoint failures before auto-disable
 
 
 @dataclass(frozen=True)
@@ -65,7 +69,14 @@ def _truncate(body: str | None) -> str | None:
     return None if body is None else body[:MAX_RESPONSE_BODY]
 
 
-async def record_attempt(session: AsyncSession, *, delivery: Delivery, worker_id: str, result: AttemptResult) -> bool:
+async def record_attempt(
+    session: AsyncSession,
+    *,
+    delivery: Delivery,
+    worker_id: str,
+    result: AttemptResult,
+    failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
+) -> bool:
     """Record `result` for `delivery`. Returns False if the lease was lost.
 
     Reads `delivery.id` and `delivery.attempt_count` (the pre-attempt count,
@@ -103,6 +114,33 @@ async def record_attempt(session: AsyncSession, *, delivery: Delivery, worker_id
         await session.rollback()
         return False
 
+    # --- circuit breaker: same transaction as the outcome ---
+    if result.succeeded:
+        await session.execute(
+            update(Endpoint)
+            .where(Endpoint.id == delivery.endpoint_id)
+            .values(consecutive_failures=0)
+        )
+    else:
+        bumped = (await session.execute(
+            update(Endpoint)
+            .where(Endpoint.id == delivery.endpoint_id)
+            .values(consecutive_failures=Endpoint.consecutive_failures + 1)
+            .returning(Endpoint.consecutive_failures)
+        )).scalar_one()
+        if bumped >= failure_threshold:
+            # One-time trip: WHERE status='enabled' so concurrent failures
+            # crossing the threshold together disable exactly once and stamp
+            # disabled_at exactly once.
+            await session.execute(
+                update(Endpoint)
+                .where(
+                    Endpoint.id == delivery.endpoint_id,
+                    Endpoint.status == EndpointStatus.ENABLED,
+                )
+                .values(status=EndpointStatus.DISABLED, disabled_at=func.now())
+            )
+
     session.add(
         DeliveryAttempt(
             delivery_id=delivery.id,
@@ -115,3 +153,39 @@ async def record_attempt(session: AsyncSession, *, delivery: Delivery, worker_id
     )
     await session.commit()
     return True
+
+
+async def discard_delivery(session: AsyncSession, *, delivery: Delivery, worker_id: str) -> bool:
+    """Void a leased delivery without attempting it (endpoint is disabled).
+
+    Same CAS guard as record_attempt; writes no attempt row, since nothing was
+    sent. Returns False if the lease was lost.
+    """
+    stmt = (
+        update(Delivery)
+        .where(Delivery.id == delivery.id, Delivery.locked_by == worker_id)
+        .values(status=DeliveryStatus.DISCARDED, locked_by=None)
+        .returning(Delivery.id)
+        .execution_options(synchronize_session=False)
+    )
+    if (await session.execute(stmt)).first() is None:
+        await session.rollback()
+        return False
+    await session.commit()
+    return True
+
+
+async def reenable_endpoint(session: AsyncSession, *, application_id, endpoint_id) -> bool:
+    """Manually re-enable a disabled endpoint, resetting the breaker counter."""
+    found = (await session.execute(
+        update(Endpoint)
+        .where(Endpoint.id == endpoint_id, Endpoint.application_id == application_id)
+        .values(
+            status=EndpointStatus.ENABLED,
+            disabled_at=None,
+            consecutive_failures=0,
+        )
+        .returning(Endpoint.id)
+    )).first()
+    await session.commit()
+    return found is not None

@@ -23,8 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.delivery import signing
 from app.delivery.claim import claim_deliveries
 from app.delivery.http import attempt_delivery
-from app.delivery.record import record_attempt
-from app.models import Delivery, Endpoint, Event
+from app.delivery.record import discard_delivery, record_attempt
+from app.models import Delivery, Endpoint, Event, EndpointStatus
 
 log = logging.getLogger("stinger.worker")
 
@@ -110,6 +110,12 @@ class Worker:
         return {e.id: e for e in eps}, {e.id: e for e in evs}
 
     async def _process(self, delivery: Delivery, endpoint: Endpoint, event: Event) -> None:
+        if endpoint.status != EndpointStatus.ENABLED:
+            # Endpoint is disabled (breaker tripped): void the delivery, no POST.
+            async with self._sf() as s:
+                await discard_delivery(s, delivery=delivery, worker_id=self.worker_id)
+            return
+        
         previous = None
         if endpoint.previous_secret and endpoint.previous_secret_expires_at:
             if endpoint.previous_secret_expires_at > datetime.now(timezone.utc):
