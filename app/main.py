@@ -1,6 +1,7 @@
 import logging
 import json
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from tenacity import after_log, before_log, retry, stop_after_attempt, wait_fixed
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
@@ -8,6 +9,8 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core import limiter
 from app.core.db import engine
+from app.config import get_settings
+from app.web.app import create_web_app
 
 
 logger = logging.getLogger(__name__)
@@ -64,3 +67,5 @@ async def main():
 @app.get("/healthz")
 async def healthz():
     return {"status": "healthy"}
+
+app.mount("/", create_web_app(async_sessionmaker, secret_key=get_settings().SECRET_KEY))
