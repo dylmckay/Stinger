@@ -1,31 +1,168 @@
-# Stinger
+# Stinger 🐝
 
-A project created with FastAPI CLI.
+A self-hostable webhook delivery platform. Publish events to it, and it
+reliably delivers signed HTTP callbacks to your customers' endpoints — with
+retries and backoff, HMAC signatures, a circuit breaker for dead endpoints, and
+a dashboard that answers the only question that matters when a webhook goes
+missing: *did it fire, and what happened?*
 
-## Quick Start
+Stinger's one design constraint shapes everything: **Postgres is the only
+stateful dependency.** No Redis, no message broker. You run `docker compose up`
+and get a working platform backed by a single database.
 
-### Start the development server
+> **Status: v0.1.0 — early.** The delivery engine, signing, SSRF protection,
+> circuit breaker, secret rotation, and dashboard are built and tested against
+> real Postgres. See [Project status](#project-status) for what's deferred.
 
-```bash
-uv run fastapi dev
+---
+
+## Features
+
+- **At-least-once delivery** with a fixed retry schedule and bounded jitter
+  (`5s → 30s → 2m → 10m → 1h → 4h → 12h`, then exhausted).
+- **HMAC-SHA256 signatures**, [Standard Webhooks](https://www.standardwebhooks.com)
+  compatible — your consumers verify with off-the-shelf libraries in any language.
+- **Secret rotation** with a dual-sign overlap window, so you rotate signing
+  secrets without a verification gap.
+- **Circuit breaker** — endpoints that fail consistently are auto-disabled
+  instead of being hammered on every event; re-enable and replay when fixed.
+- **SSRF protection** — every delivery target is resolved and validated against
+  private / loopback / metadata IP ranges, with the connection pinned to the
+  vetted IP to close DNS-rebinding races.
+- **Idempotent publish** — retry a publish safely with an idempotency key.
+- **Replay** — re-drive any delivery from the dashboard or API.
+- **Observable** — a server-rendered dashboard with a per-delivery attempt
+  timeline, endpoint health, and an event log.
+- **Postgres-as-queue** — transactional fan-out via `FOR UPDATE SKIP LOCKED`;
+  the whole queue is inspectable with plain SQL.
+
+## How it works
+
+A single image runs in two modes — `api` (ingest + dashboard) and `worker`
+(delivery loop) — over one Postgres database:
+
+```
+publish (authenticated)
+  → persist event + fan out to one delivery per subscribed endpoint   [one txn]
+  → NOTIFY ───────────────────────────────────────────────────────────┐
+                                                                       ▼
+  worker:  claim due deliveries (SKIP LOCKED + visibility lease)   (wakes early)
+        → sign (HMAC-SHA256)
+        → POST (SSRF-guarded, timeout-bounded)
+        → record outcome (succeed / retry-with-backoff / exhaust)
 ```
 
-Visit http://localhost:8000
+The full reasoning behind each decision — why Postgres-as-queue, why a lease
+instead of a long transaction, why SHA-256 for keys but HMAC for payloads — is
+in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-### Deploy to FastAPI Cloud
+## Quickstart
 
-> FastAPI Cloud is currently in private beta. Join the waitlist at https://fastapicloud.com
+Requires Docker and Docker Compose.
 
 ```bash
-uv run fastapi deploy
+git clone https://github.com/dylmckay/stinger.git
+cd stinger
+cp .env.example .env          # a SECRET_KEY is pre-generated; regenerate for production
+docker compose up -d --build  # starts postgres, runs migrations, then api + worker
 ```
 
-## Project Structure
+The API is now on `http://localhost:8000` and the worker is delivering. Next,
+bootstrap your first application, endpoint, and key with the admin CLI:
 
-- `main.py` - Your FastAPI application
-- `pyproject.toml` - Project dependencies
+```bash
+# 1. Create an application (a tenant) — prints its id
+docker compose exec api python -m app.cli create-application "Acme"
 
-## Learn More
+# 2. Register an event type for it
+docker compose exec api python -m app.cli add-event-type <application_id> invoice.paid
 
-- [FastAPI Documentation](https://fastapi.tiangolo.com)
-- [FastAPI Cloud](https://fastapicloud.com)
+# 3. Add a receiving endpoint, subscribed to that event type
+#    Prints the endpoint id and its signing secret (whsec_…) — give the secret
+#    to whoever runs the receiver.
+docker compose exec api python -m app.cli add-endpoint <application_id> \
+    https://example.com/webhooks --event-type invoice.paid
+
+# 4. Issue an API key (shown once)
+docker compose exec api python -m app.cli issue-key <application_id> --name prod
+```
+
+Publish an event with the key:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/events \
+  -H "Authorization: Bearer sk_…" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "invoice.paid", "payload": {"amount": 1000}, "idempotency_key": "inv_123"}'
+```
+
+Then open `http://localhost:8000`, paste the same API key to sign in, and watch
+the delivery land — including its full attempt timeline.
+
+## Publishing events
+
+`POST /api/v1/events` with a `Bearer` API key:
+
+| Field             | Type   | Notes                                              |
+| ----------------- | ------ | -------------------------------------------------- |
+| `event_type`      | string | Must be a registered event type for the app.       |
+| `payload`         | object | Delivered verbatim; the signature covers it.        |
+| `idempotency_key` | string | Optional. A repeat publish returns the same event.  |
+
+The event fans out to every enabled endpoint subscribed to that type. A repeat
+publish with the same `idempotency_key` returns the existing event and does not
+re-fan-out, so publishing is safe to retry.
+
+## Receiving & verifying
+
+Each delivery carries `webhook-id`, `webhook-timestamp`, and `webhook-signature`
+headers. Verify them with any [Standard Webhooks](https://www.standardwebhooks.com)
+library, or by hand — see [`docs/receiving-webhooks.md`](docs/receiving-webhooks.md)
+for verification snippets and the rotation-window handling.
+
+## Configuration
+
+Set in `.env` (read by Docker Compose). See [`.env.example`](.env.example).
+
+| Variable                | Required | Default | Purpose                                                              |
+| ----------------------- | -------- | ------- | -------------------------------------------------------------------- |
+| `SECRET_KEY`            | yes      | —       | Signs dashboard session cookies. Generate a fresh one for production. |
+| `POSTGRES_USER/PASSWORD/DB` | yes  | —       | Credentials for the bundled Postgres service.                        |
+| `DATABASE_URL`          | no       | derived | Composed from `POSTGRES_*`; set only to use an external database.     |
+| `ALLOW_PRIVATE_TARGETS` | no       | `false` | Allow delivery to private/loopback IPs. Keep `false` in production.   |
+
+Generate a `SECRET_KEY`:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+## Development
+
+Stinger uses [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync                       # install deps (including the dev group)
+
+uv run pytest                 # run the test suite (needs Docker for testcontainers)
+
+# Run the services locally against your own Postgres:
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload    # api + dashboard on :8000
+uv run python -m app.worker_main        # delivery worker
+```
+
+## Project status
+
+v0.1.0. Built and tested: the delivery engine (fan-out, lease-based claim,
+retries, crash recovery), HMAC signing with rotation, SSRF protection, the
+circuit breaker, idempotent publish, replay, and the dashboard.
+
+Known limitations and deferred work are tracked honestly in the
+[architecture doc](docs/ARCHITECTURE.md#deferred--known-limitations) — including
+breaker auto-recovery, response-body streaming caps, and per-endpoint
+concurrency.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
