@@ -28,6 +28,7 @@ from datetime import timedelta
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.delivery import signing
 from app.models import Delivery, DeliveryAttempt, DeliveryStatus, Endpoint, EndpointStatus
 
 # The retry schedule IS the documented delivery contract: one wait per entry,
@@ -44,6 +45,7 @@ RETRY_SCHEDULE: tuple[timedelta, ...] = (
 JITTER_FRACTION = 0.2           # +/-20%, de-synchronizes a simultaneous failure batch
 MAX_RESPONSE_BODY = 2048        # chars of response body retained on an attempt row
 DEFAULT_FAILURE_THRESHOLD = 20  # consecutive endpoint failures before auto-disable
+DEFAULT_ROTATION_WINDOW = timedelta(hours=24)  # overlap window where both secrets sign
 
 
 @dataclass(frozen=True)
@@ -155,7 +157,9 @@ async def record_attempt(
     return True
 
 
-async def discard_delivery(session: AsyncSession, *, delivery: Delivery, worker_id: str) -> bool:
+async def discard_delivery(
+    session: AsyncSession, *, delivery: Delivery, worker_id: str
+) -> bool:
     """Void a leased delivery without attempting it (endpoint is disabled).
 
     Same CAS guard as record_attempt; writes no attempt row, since nothing was
@@ -175,7 +179,9 @@ async def discard_delivery(session: AsyncSession, *, delivery: Delivery, worker_
     return True
 
 
-async def reenable_endpoint(session: AsyncSession, *, application_id, endpoint_id) -> bool:
+async def reenable_endpoint(
+    session: AsyncSession, *, application_id, endpoint_id
+) -> bool:
     """Manually re-enable a disabled endpoint, resetting the breaker counter."""
     found = (await session.execute(
         update(Endpoint)
@@ -189,3 +195,36 @@ async def reenable_endpoint(session: AsyncSession, *, application_id, endpoint_i
     )).first()
     await session.commit()
     return found is not None
+
+
+async def rotate_endpoint_secret(
+    session: AsyncSession,
+    *,
+    application_id,
+    endpoint_id,
+    window: timedelta = DEFAULT_ROTATION_WINDOW,
+) -> str | None:
+    """Rotate an endpoint's signing secret, opening a dual-sign overlap window.
+
+    Moves the current secret to `previous_secret` and stamps
+    `previous_secret_expires_at = now() + window`, so the worker signs with BOTH
+    until the window closes and consumers can migrate without a verification gap.
+    Returns the new secret (shown once) or None if the endpoint isn't found.
+
+    The SET right-hand sides evaluate against the pre-update row, so
+    `previous_secret = secret` captures the OLD secret in the same statement that
+    installs the new one.
+    """
+    new_secret = signing.generate_secret()
+    found = (await session.execute(
+        update(Endpoint)
+        .where(Endpoint.id == endpoint_id, Endpoint.application_id == application_id)
+        .values(
+            previous_secret=Endpoint.secret,
+            secret=new_secret,
+            previous_secret_expires_at=func.now() + window,
+        )
+        .returning(Endpoint.id)
+    )).first()
+    await session.commit()
+    return new_secret if found is not None else None

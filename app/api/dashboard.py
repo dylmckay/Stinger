@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import reads
 from app.api.deps import current_application, get_session
 from app.models import Application
-from app.delivery.record import reenable_endpoint
+from app.delivery.record import reenable_endpoint, rotate_endpoint_secret
 
 router = APIRouter(prefix="/api/v1", tags=["dashboard"])
 
@@ -113,3 +113,18 @@ async def reenable(
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "endpoint not found")
     return {"status": "enabled"}
+
+
+@router.post("/endpoints/{endpoint_id}/rotate-secret", status_code=status.HTTP_200_OK)
+async def rotate_secret(
+    endpoint_id: UUID,
+    application: Application = Depends(current_application),
+    session: AsyncSession = Depends(get_session),
+):
+    new_secret = await rotate_endpoint_secret(
+        session, application_id=application.id, endpoint_id=endpoint_id
+    )
+    if new_secret is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "endpoint not found")
+    # Shown once; the caller configures their consumer with it during the window.
+    return {"secret": new_secret}
