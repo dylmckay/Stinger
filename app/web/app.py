@@ -44,9 +44,9 @@ def _humanize_age(dt: datetime) -> str:
 def create_web_app(session_factory: async_sessionmaker[AsyncSession], *, secret_key: str) -> FastAPI:
     app = FastAPI()
     app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=False)
-    app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
+    app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parents[1] / "static"), name="static")
 
-    templates = Jinja2Templates(directory=_HERE / "templates")
+    templates = Jinja2Templates(directory=Path(__file__).resolve().parents[1] / "static" / "templates")
     templates.env.filters["age"] = _humanize_age
     app.state.templates = templates
     app.state.session_factory = session_factory
