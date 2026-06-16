@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import os
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -10,6 +11,19 @@ from app.models import Base
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+
+def get_database_url() -> str:
+    return os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+
+
+def get_sync_database_url(url: str) -> str:
+    if url.startswith("postgresql+asyncpg://"):
+        return url.replace("+asyncpg", "", 1)
+    return url
+
+# Prefer explicit runtime DATABASE_URL when available.
+config.set_main_option("sqlalchemy.url", get_sync_database_url(get_database_url()))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -36,7 +50,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = get_database_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
