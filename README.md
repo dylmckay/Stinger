@@ -81,7 +81,7 @@ docker compose exec api python -m app.cli add-event-type <application_id> invoic
 #    Prints the endpoint id and its signing secret (whsec_…) — give the secret
 #    to whoever runs the receiver.
 docker compose exec api python -m app.cli add-endpoint <application_id> \
-    https://example.com/webhooks --event-type invoice.paid
+    https://httpbin.org/post --event-type invoice.paid
 
 # 4. Issue an API key (shown once)
 docker compose exec api python -m app.cli issue-key <application_id> --name prod
