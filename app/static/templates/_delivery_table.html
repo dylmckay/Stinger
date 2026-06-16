@@ -1,0 +1,12 @@
+<table class="grid" id="delivery-table">
+  <thead>
+    <tr><th>Status</th><th>Event</th><th>Endpoint</th><th>Attempts</th><th>Age</th></tr>
+  </thead>
+  <tbody>
+    {% if rows %}
+      {% include "_delivery_rows.html" %}
+    {% else %}
+      <tr class="empty"><td colspan="5">No deliveries{% if status %} with status “{{ status }}”{% endif %}. Publish an event to see it here.</td></tr>
+    {% endif %}
+  </tbody>
+</table>

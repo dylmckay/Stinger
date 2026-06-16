@@ -1,0 +1,23 @@
+<section class="timeline-wrap" id="timeline"
+  {% if not terminal %}hx-get="/dashboard/deliveries/{{ d.delivery.id }}/timeline" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+  <div class="status-line s-{{ d.delivery.status }}">
+    <span class="dot s-{{ d.delivery.status }}"></span>{{ d.delivery.status }}
+    <span class="muted">· {{ d.delivery.attempt_count }} attempt{{ d.delivery.attempt_count != 1 and 's' or '' }}{% if not terminal %} · next {{ d.delivery.next_attempt_at | age }}{% endif %}</span>
+  </div>
+  <ol class="timeline">
+    {% for a in d.attempts %}
+      {% set ok = a.response_status and 200 <= a.response_status < 300 %}
+      <li class="node {{ 'ok' if ok else 'fail' }}">
+        <span class="num">{{ a.attempt_number }}</span>
+        <div class="node-body">
+          <span class="code">{{ a.response_status or a.error or '—' }}</span>
+          <span class="muted">{{ a.created_at | age }}{% if a.latency_ms is not none %} · {{ a.latency_ms }}ms{% endif %}</span>
+          {% if a.response_body %}<pre class="resp">{{ a.response_body }}</pre>{% endif %}
+        </div>
+      </li>
+    {% endfor %}
+    {% if not d.attempts %}
+      <li class="node empty"><div class="node-body muted">No attempts yet — awaiting first delivery.</div></li>
+    {% endif %}
+  </ol>
+</section>

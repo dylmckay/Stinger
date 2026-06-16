@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set active = 'deliveries' %}
+{% block title %}Delivery · Stinger{% endblock %}
+{% block content %}
+  <a class="back" href="/dashboard/deliveries">← Deliveries</a>
+  <div class="detail">
+    <section class="summary">
+      <dl class="kv">
+        <dt>event</dt><dd>{{ d.event.id }}</dd>
+        <dt>endpoint</dt><dd>{{ d.endpoint.url }}</dd>
+        <dt>delivery</dt><dd>{{ d.delivery.id }}</dd>
+        <dt>created</dt><dd>{{ d.delivery.created_at | age }}</dd>
+      </dl>
+      <div class="payload">
+        <h3>Payload</h3>
+        <pre>{{ d.event.payload }}</pre>
+      </div>
+      <form hx-post="/dashboard/deliveries/{{ d.delivery.id }}/replay">
+        <button class="btn-primary" type="submit">Replay delivery</button>
+      </form>
+    </section>
+    {% include "_timeline.html" %}
+  </div>
+{% endblock %}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Stinger{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/dashboard/deliveries"><span class="brand-mark">⬡</span> stinger</a>
+    <nav class="nav">
+      <a href="/dashboard/deliveries" class="{% if active=='deliveries' %}on{% endif %}">Deliveries</a>
+      <a href="/dashboard/endpoints" class="{% if active=='endpoints' %}on{% endif %}">Endpoints</a>
+    </nav>
+    <div class="session">
+      <span class="appname">{{ request.session.get('application_name', '') }}</span>
+      <a href="/logout" class="muted">Log out</a>
+    </div>
+  </header>
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

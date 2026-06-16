@@ -1,0 +1,18 @@
+{% for r in rows %}
+  <tr class="row" onclick="location.href='/dashboard/deliveries/{{ r.id }}'">
+    <td><span class="pill s-{{ r.status }}"><span class="dot"></span>{{ r.status }}</span></td>
+    <td class="etype"><a href="/dashboard/deliveries/{{ r.id }}">{{ r.event_type }}</a></td>
+    <td class="endpoint">{{ r.endpoint_url }}</td>
+    <td class="num">{{ r.attempt_count }}</td>
+    <td class="num">{{ r.created_at | age }}</td>
+  </tr>
+{% endfor %}
+{% if next_cursor %}
+  <tr id="more">
+    <td colspan="5">
+      <button class="loadmore"
+              hx-get="/dashboard/deliveries?cursor={{ next_cursor }}{% if status %}&status={{ status }}{% endif %}"
+              hx-target="#more" hx-swap="outerHTML">Load more</button>
+    </td>
+  </tr>
+{% endif %}

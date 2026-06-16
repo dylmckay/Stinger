@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% set active = 'deliveries' %}
+{% block title %}Deliveries · Stinger{% endblock %}
+{% block content %}
+  <div class="page-head"><h1>Deliveries</h1></div>
+  <div class="filters" hx-target="#delivery-table" hx-swap="outerHTML" hx-push-url="true">
+    <a class="chip {% if not status %}on{% endif %}" hx-get="/dashboard/deliveries">all</a>
+    {% for s in statuses %}
+      <a class="chip s-{{ s }} {% if status == s %}on{% endif %}"
+         hx-get="/dashboard/deliveries?status={{ s }}">{{ s }}</a>
+    {% endfor %}
+  </div>
+  {% include "_delivery_table.html" %}
+{% endblock %}
