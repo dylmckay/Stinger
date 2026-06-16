@@ -1,33 +1,42 @@
-# Stage 1: Builder (Uses full Bookworm to compile uvloop/asyncpg)
-FROM python:3.14-bookworm AS builder
+# syntax=docker/dockerfile:1
+#
+# One image, three run modes (api / worker / migrate) — selected by the
+# container command in docker-compose.yml, not by separate images.
 
+# ---- builder: resolve locked deps into a venv with uv ----
+FROM python:3.14-slim AS builder
+
+# uv for fast, reproducible installs. Pin uv itself for repeatable builds.
+RUN pip install --no-cache-dir uv
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 WORKDIR /app
 
-# Prevent python from writing bytecode 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-
-# Install build tools and dependencies
+# Install dependencies first (their own cache layer), without the project,
+# so app code changes don't invalidate the dependency layer.
 COPY pyproject.toml uv.lock ./
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential python3-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && python -m venv /install \
-    && /install/bin/python -m pip install --no-cache-dir uv \
-    && /install/bin/python -m uv sync --locked --active --no-install-project --no-install-workspace --no-install-local --no-cache
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
 
-# Stage 2: Runtime (Uses slim to keep image small)
-FROM python:3.14-slim-bookworm
+# Then the project itself.
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
+# ---- runtime: slim, non-root, just the venv + app ----
+FROM python:3.14-slim AS runtime
+
+RUN groupadd --system stinger && useradd --system --gid stinger stinger
 WORKDIR /app
 
-# Copy the compiled libraries from the builder stage
-COPY --from=builder /install /install
+COPY --from=builder --chown=stinger:stinger /app /app
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Copy application code
-COPY . .
-
+USER stinger
 EXPOSE 8000
 
-CMD ["/install/bin/python", "-m", "fastapi", "dev", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+# Default mode is the API; compose overrides command for worker and migrate.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
