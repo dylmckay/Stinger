@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% set active = 'endpoints' %}
+{% block title %}Endpoints · Stinger{% endblock %}
+{% block content %}
+  <div class="page-head"><h1>Endpoints</h1></div>
+  {% if endpoints %}
+    <div class="cards">
+      {% for card in endpoints %}
+        {% include "_endpoint_card.html" %}
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">No endpoints yet. Create one to start receiving deliveries.</p>
+  {% endif %}
+{% endblock %}

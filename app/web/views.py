@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
@@ -11,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app import reads
-from app.models import Application, Endpoint, Event, EventType
+from app.delivery.record import reenable_endpoint, rotate_endpoint_secret
+from app.models import Application, Endpoint, EndpointEventType, Event, EventType
 from app.web.deps import current_application_web, get_session, is_htmx
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -136,3 +138,87 @@ async def replay(
         return Response(status_code=404)
     # Land the operator on the fresh delivery so they watch the new attempt.
     return Response(status_code=204, headers={"HX-Redirect": f"/dashboard/deliveries/{new_id}"})
+
+
+# ---- endpoints page ----
+
+def _card_ctx(ep: Endpoint, types: list[str], revealed_secret: str | None = None) -> dict:
+    now = datetime.now(timezone.utc)
+    expires = ep.previous_secret_expires_at
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return {
+        "ep": ep,
+        "types": types,
+        "rotating": bool(expires and expires > now),
+        "revealed_secret": revealed_secret,
+    }
+
+
+async def _load_card(
+    session: AsyncSession, application_id, endpoint_id, revealed_secret: str | None = None
+) -> dict | None:
+    ep = await session.scalar(
+        select(Endpoint).where(
+            Endpoint.id == endpoint_id, Endpoint.application_id == application_id
+        )
+    )
+    if ep is None:
+        return None
+    types = [
+        name for (_eid, name) in (await session.execute(
+            select(EndpointEventType.endpoint_id, EventType.name)
+            .join(EventType, EventType.id == EndpointEventType.event_type_id)
+            .where(EndpointEventType.endpoint_id == endpoint_id)
+        )).all()
+    ]
+    return _card_ctx(ep, types, revealed_secret)
+
+
+@router.get("/endpoints")
+async def endpoints(
+    request: Request,
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    pairs = await reads.list_endpoints(session, application_id=application.id)
+    cards = [_card_ctx(ep, types) for ep, types in pairs]
+    return request.app.state.templates.TemplateResponse(
+        request, "endpoints.html", {"endpoints": cards}
+    )
+
+
+@router.post("/endpoints/{endpoint_id}/reenable")
+async def reenable_ep(
+    request: Request,
+    endpoint_id: UUID,
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    ok = await reenable_endpoint(
+        session, application_id=application.id, endpoint_id=endpoint_id
+    )
+    if not ok:
+        return Response(status_code=404)
+    card = await _load_card(session, application.id, endpoint_id)
+    return request.app.state.templates.TemplateResponse(
+        request, "_endpoint_card.html", {"card": card}
+    )
+
+
+@router.post("/endpoints/{endpoint_id}/rotate-secret")
+async def rotate_ep(
+    request: Request,
+    endpoint_id: UUID,
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    new_secret = await rotate_endpoint_secret(
+        session, application_id=application.id, endpoint_id=endpoint_id
+    )
+    if new_secret is None:
+        return Response(status_code=404)
+    card = await _load_card(session, application.id, endpoint_id, revealed_secret=new_secret)
+    return request.app.state.templates.TemplateResponse(
+        request, "_endpoint_card.html", {"card": card}
+    )

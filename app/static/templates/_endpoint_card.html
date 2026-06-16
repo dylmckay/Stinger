@@ -1,0 +1,38 @@
+<article class="card" id="ep-{{ card.ep.id }}">
+  <div class="card-head">
+    <span class="ep-url">{{ card.ep.url }}</span>
+    <span class="pill s-{{ card.ep.status }}"><span class="dot s-{{ card.ep.status }}"></span>{{ card.ep.status }}</span>
+  </div>
+  <div class="card-meta">
+    {% if card.ep.status == 'disabled' %}<span class="warn">disabled {{ card.ep.disabled_at | age }}</span> · {% endif %}
+    <span>{{ card.ep.consecutive_failures }} consecutive failure{{ card.ep.consecutive_failures != 1 and 's' or '' }}</span>
+    {% if card.rotating %} · <span class="rotating">rotating · previous secret valid {{ card.ep.previous_secret_expires_at | age }}</span>{% endif %}
+  </div>
+  {% if card.types %}
+    <div class="ep-types">
+      {% for t in card.types %}<span class="type-chip">{{ t }}</span>{% endfor %}
+    </div>
+  {% endif %}
+
+  {% if card.revealed_secret %}
+    <div class="reveal">
+      <div class="reveal-label">New signing secret — copy it now, it won't be shown again</div>
+      <div class="reveal-row">
+        <input class="secret-field" id="sec-{{ card.ep.id }}" value="{{ card.revealed_secret }}" readonly onclick="this.select()">
+        <button class="copy" type="button"
+          onclick="const i=document.getElementById('sec-{{ card.ep.id }}');i.select();if(navigator.clipboard)navigator.clipboard.writeText(i.value);this.textContent='Copied'">Copy</button>
+      </div>
+      <div class="reveal-note">The old and new secret both verify for 24h while you update your consumer.</div>
+    </div>
+  {% endif %}
+
+  <div class="card-actions">
+    {% if card.ep.status == 'disabled' %}
+      <button class="btn-secondary" hx-post="/dashboard/endpoints/{{ card.ep.id }}/reenable"
+              hx-target="#ep-{{ card.ep.id }}" hx-swap="outerHTML">Re-enable</button>
+    {% endif %}
+    <button class="btn-secondary" hx-post="/dashboard/endpoints/{{ card.ep.id }}/rotate-secret"
+            hx-target="#ep-{{ card.ep.id }}" hx-swap="outerHTML"
+            hx-confirm="Rotate the signing secret? The current secret stays valid for 24h.">Rotate secret</button>
+  </div>
+</article>
