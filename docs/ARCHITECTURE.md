@@ -198,6 +198,45 @@ than you can finish before the lease expires. A task finishing wakes the loop to
 refill promptly. On `SIGTERM` the loop stops claiming and drains in-flight
 deliveries; anything not finished is covered by lease expiry.
 
+### Circuit breaker
+
+A permanently-dead endpoint shouldn't burn the full retry schedule on every
+event published to it. Each endpoint carries a `consecutive_failures` counter,
+incremented on every failed attempt and **reset to zero on any success**, all
+inside `record_attempt`'s transaction so the count can never diverge from the
+outcome it reflects. Past a threshold (default 20, configurable) the endpoint is
+disabled. Reset-on-success is what makes this target the right endpoints: a
+flaky endpoint with successes mixed in keeps resetting and never trips, so the
+breaker fires only on *consistently* failing endpoints. *Tradeoff:* a
+consecutive-failure count is coupled to traffic volume rather than wall-clock
+time — a high-traffic endpoint trips in seconds, a low-traffic one in hours — so
+the threshold is set high enough to ride out a transient blip. A sustained-time
+window would decouple from volume at the cost of extra state.
+
+The trip is a **one-time transition**: the disable `UPDATE` carries `WHERE
+status = 'enabled'`, so concurrent failures crossing the threshold together
+disable exactly once and stamp `disabled_at` exactly once.
+
+A disabled endpoint's already-queued deliveries are handled by a **worker-side
+gate**: they're still claimed, but the worker checks `endpoint.status` before
+signing and, if disabled, marks the delivery `discarded` (no POST) instead of
+attempting it — this is where the `discarded` status earns its keep. *Rejected:*
+eagerly bulk-updating all the endpoint's pending rows at trip time races with
+deliveries other workers are mid-POST on; parking them (leave pending, resume on
+re-enable) either churns the claim with re-claim-and-skip or forces a join into
+the hot claim query. The gate is race-free (each delivery is discarded by the
+one worker holding its lease, through the same CAS), keeps the claim query
+single-table, and drains the backlog with zero HTTP to the dead host. The only
+cost is a tiny staleness window — an endpoint loaded just before it's disabled
+gets one more POST, which is benign.
+
+Recovery is **manual re-enable** (which resets the counter and clears
+`disabled_at`) followed by **replay** to re-drive the discarded deliveries.
+Auto-disable plus manual-re-enable-with-replay is the loop that distinguishes a
+real platform from `requests.post` in a loop. A `410 Gone` currently counts
+toward the threshold like any other failure; it is arguably a stronger "disable
+me now" signal, but treating it uniformly is the simpler choice for now.
+
 ---
 
 ## HTTP delivery
@@ -350,10 +389,16 @@ Honest scope boundaries, listed so their absence reads as a decision:
 - **Response-body memory cap.** The current attempt reads the full response body
   before truncating; a hardened version streams with a byte cap. The 15s deadline
   bounds a slow drip but not a fast flood.
-- **Endpoint circuit breaker.** A permanently-dead endpoint currently burns the
-  full retry schedule on every event. Auto-disable after sustained failure (the
-  `consecutive_failures` / `disabled_at` columns already exist) and worker-side
-  honoring of `endpoint.status` are the next increment.
+- **Breaker auto-recovery (half-open).** Disabled endpoints re-enable manually;
+  a half-open state (a cooldown, then a trial delivery that re-enables on
+  success) is a future enhancement.
+- **Time-window disable trigger.** The breaker counts *consecutive failures*,
+  which couples the trip to traffic volume; a sustained-time-window trigger
+  ("failing continuously for >1h") is more volume-robust but needs extra state.
+- **Secret-rotation action.** Dual-signing during rotation is wired on the
+  delivery side (the worker reads `previous_secret` / `previous_secret_expires_at`
+  and signs with both), but the management action that *sets* those columns and
+  starts the rotation window is still to come.
 - **Per-endpoint concurrency cap.** Global concurrency is bounded; a per-endpoint
   cap (to stop one slow consumer monopolizing the pool and to give rough
   per-endpoint ordering) is a refinement.
