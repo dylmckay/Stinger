@@ -9,7 +9,8 @@ WORKDIR /app
 
 # 1) Dependencies first — cached unless the lockfile changes.
 COPY pyproject.toml uv.lock ./
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
         python3-dev \
