@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% set active = 'events' %}
+{% block title %}Events · Stinger{% endblock %}
+{% block content %}
+  <div class="page-head"><h1>Events</h1></div>
+  <table class="grid" id="event-table">
+    <thead>
+      <tr><th>Event</th><th>Payload</th><th>Deliveries</th><th>Age</th></tr>
+    </thead>
+    <tbody>
+      {% if rows %}
+        {% include "_event_rows.html" %}
+      {% else %}
+        <tr class="empty"><td colspan="4">No events yet. Publish one to see it here.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endblock %}

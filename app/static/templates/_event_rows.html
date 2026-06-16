@@ -1,0 +1,16 @@
+{% for r in rows %}
+  <tr class="row event-row">
+    <td class="etype">{{ r.event_type }}{% if r.idempotency_key %} <span class="idem" title="Idempotency key: {{ r.idempotency_key }}">idem</span>{% endif %}</td>
+    <td class="payload-cell" title="{{ r.payload }}">{{ r.payload }}</td>
+    <td class="num">{{ r.delivery_count }}</td>
+    <td class="num">{{ r.created_at | age }}</td>
+  </tr>
+{% endfor %}
+{% if next_cursor %}
+  <tr id="more-events">
+    <td colspan="4">
+      <button class="loadmore" hx-get="/dashboard/events?cursor={{ next_cursor }}"
+              hx-target="#more-events" hx-swap="outerHTML">Load more</button>
+    </td>
+  </tr>
+{% endif %}

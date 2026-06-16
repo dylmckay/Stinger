@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app import reads
 from app.delivery.record import reenable_endpoint, rotate_endpoint_secret
-from app.models import Application, Endpoint, EndpointEventType, Event, EventType
+from app.models import Application, Delivery, Endpoint, EndpointEventType, Event, EventType
 from app.web.deps import current_application_web, get_session, is_htmx
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -222,3 +222,48 @@ async def rotate_ep(
     return request.app.state.templates.TemplateResponse(
         request, "_endpoint_card.html", {"card": card}
     )
+
+
+# ---- events log ----
+
+async def _event_rows(session: AsyncSession, events) -> list[dict]:
+    """Attach event-type name and fan-out (delivery) count to event rows."""
+    if not events:
+        return []
+    ev_ids = [e.id for e in events]
+    counts = dict((await session.execute(
+        select(Delivery.event_id, func.count())
+        .where(Delivery.event_id.in_(ev_ids))
+        .group_by(Delivery.event_id)
+    )).all())
+    et_ids = {e.event_type_id for e in events}
+    ets = {t.id: t.name for t in (await session.scalars(
+        select(EventType).where(EventType.id.in_(et_ids)))).all()}
+    return [
+        {
+            "id": e.id,
+            "event_type": ets.get(e.event_type_id, "—"),
+            "payload": e.payload,
+            "idempotency_key": e.idempotency_key,
+            "delivery_count": counts.get(e.id, 0),
+            "created_at": e.created_at,
+        }
+        for e in events
+    ]
+
+
+@router.get("/events")
+async def events(
+    request: Request,
+    cursor: str | None = None,
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    page = await reads.list_events(
+        session, application_id=application.id, limit=PAGE_SIZE, cursor=cursor
+    )
+    ctx = {"rows": await _event_rows(session, page.items), "next_cursor": page.next_cursor}
+    templates = request.app.state.templates
+    if is_htmx(request) and cursor:                 # load more appends rows only
+        return templates.TemplateResponse(request, "_event_rows.html", ctx)
+    return templates.TemplateResponse(request, "events.html", ctx)
