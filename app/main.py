@@ -1,71 +1,71 @@
+"""Composition root for the `api` process.
+
+One FastAPI app serves both surfaces: the JSON API at `/api/v1/*`, and the
+server-rendered dashboard mounted at `/` (which brings its own SessionMiddleware,
+static files, and templates). Explicit API routes are registered before the
+mount, so they win; everything else (`/`, `/login`, `/dashboard/*`, `/static/*`)
+falls through to the dashboard app.
+
+Run with:  uvicorn app.main:app --host 0.0.0.0 --port 8000
+"""
+from __future__ import annotations
+
 import logging
-import json
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker
-from tenacity import after_log, before_log, retry, stop_after_attempt, wait_fixed
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from app.core import limiter
-from app.core.db import engine
+
+from app.api import dashboard as api_dashboard
+from app.api import deps as api_deps
+from app.api import events as api_events
 from app.config import get_settings
 from app.web.app import create_web_app
 
-
-logger = logging.getLogger(__name__)
-
-max_tries = 60 * 5  # 5 minutes
-wait_seconds = 1
-
-@retry(
-    stop=stop_after_attempt(max_tries),
-    wait=wait_fixed(wait_seconds),
-    before=before_log(logger, logging.INFO),
-    after=after_log(logger, logging.WARN),
-)
-def wait_for_db(db_engine=engine) -> None:
-    """Wait for the database to become available.
-
-    Uses Tenacity to retry the health check for up to `max_tries` with a fixed
-    `wait_seconds` delay between attempts. The check executes a trivial SQL
-    statement (SELECT 1) using a short-lived connection.
-    """
-    try:
-        with db_engine.connect() as conn:
-            # simple query to ensure the DB will respond to requests
-            conn.execute(text("SELECT 1"))
-            logger.info("Database is ready")
-            return
-    except Exception as e:
-        logger.error("Database not ready: %s", e)
-        raise
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("stinger.api")
 
 
-app = FastAPI(title="Stinger", version="0.0.1")
-app.state.limiter = limiter.rlimiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception: %s %s", request.method, request.url)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": f"An unexpected error occurred: {exc}"}
-    )
-
-@app.get("/")
-async def main():
-    payload = {
-        "message": "Welcome to Stinger! 🐝"
-        }
-    # ensures_ascii=True forces emoji conversion to \uD83D\uDC1D to ensure compatibility with legacy systems
-    json_bytes = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-    return JSONResponse(content=json.loads(json_bytes))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await app.state.engine.dispose()
 
 
-@app.get("/healthz")
-async def healthz():
-    return {"status": "healthy"}
+def create_app() -> FastAPI:
+    settings = get_settings()
+    engine = create_async_engine(settings.DATABASE_URL, pool_size=10, max_overflow=5)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-app.mount("/", create_web_app(async_sessionmaker, secret_key=get_settings().SECRET_KEY))
+    app = FastAPI(title="Stinger", version="0.1.0", lifespan=lifespan)
+    app.state.engine = engine
+    app.state.session_factory = session_factory
+
+    # The JSON API's get_session is a stub by design (overridden in tests);
+    # wire it here to the real factory. (Alternatively, change api.deps.get_session
+    # to read request.app.state.session_factory and drop this override.)
+    async def get_session():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[api_deps.get_session] = get_session
+    app.include_router(api_events.router)
+    app.include_router(api_dashboard.router)
+
+    @app.get("/healthz")
+    async def healthz():
+        return {"status": "healthy"}
+
+    @app.exception_handler(Exception)
+    async def on_unhandled(request: Request, exc: Exception):
+        # Log the detail server-side; never return internals to the caller.
+        log.exception("unhandled error: %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "internal server error"})
+
+    # Dashboard mounted last so the explicit API routes above take precedence.
+    app.mount("/", create_web_app(session_factory, secret_key=settings.SECRET_KEY))
+    return app
+
+
+app = create_app()
