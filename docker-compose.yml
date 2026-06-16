@@ -8,7 +8,7 @@ x-app: &app
     # Use an external DATABASE_URL if set, else compose one for the bundled db.
     DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}}
     SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env — see .env.example}
-    STINGER_ALLOW_PRIVATE: ${STINGER_ALLOW_PRIVATE:-false}
+    ALLOW_PRIVATE_TARGETS: ${ALLOW_PRIVATE_TARGETS:-false}
   restart: unless-stopped
 
 services:
