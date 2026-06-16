@@ -1,57 +1,62 @@
 name: stinger
 
+# Shared config for the three app services, all built from one image.
+x-app: &app
+  build: .
+  image: stinger:local
+  environment:
+    # Use an external DATABASE_URL if set, else compose one for the bundled db.
+    DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}}
+    SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env — see .env.example}
+    STINGER_ALLOW_PRIVATE: ${STINGER_ALLOW_PRIVATE:-false}
+  restart: unless-stopped
+
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-stinger}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stinger}
-      POSTGRES_DB: ${POSTGRES_DB:-stinger}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stinger} -d ${POSTGRES_DB:-stinger}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 10
-    # Not published by default — Stinger reaches it over the compose network.
-    # Uncomment to inspect from the host:
+    restart: unless-stopped
+    # Uncomment to inspect the DB from the host:
     # ports: ["5432:5432"]
 
-  # One-shot: bring the schema to head, then exit. api/worker wait for success.
+  # One-shot: apply migrations once, then exit. api/worker wait for this.
   migrate:
-    image: stinger:local
+    <<: *app
     command: ["alembic", "upgrade", "head"]
-    env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
   api:
-    build: .
-    image: stinger:local        # built once here; migrate/worker reuse this tag
+    <<: *app
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    env_file: .env
-    ports:
-      - "${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    restart: unless-stopped
+    ports:
+      - "8000:8000"
 
   worker:
-    image: stinger:local
+    <<: *app
     command: ["python", "-m", "app.worker_main"]
-    env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    restart: unless-stopped
 
 volumes:
   pgdata:
