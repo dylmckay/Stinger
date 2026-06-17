@@ -17,15 +17,12 @@ import asyncio
 import sys
 import uuid
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app import management
 from app.auth import create_api_key
 from app.config import get_settings
-from app.delivery import signing
-from app.models import Application, Endpoint, EndpointEventType, EventType
-from app.crypto import get_secret_box
+from app.models import Application
 
 
 class CLIError(Exception):
@@ -54,50 +51,27 @@ async def cmd_create_application(session, *, name: str) -> str:
 
 
 async def cmd_add_event_type(session, *, application_id: uuid.UUID, name: str) -> str:
-    await _require_application(session, application_id)
-    event_type = EventType(application_id=application_id, name=name)
-    session.add(event_type)
     try:
-        await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        raise CLIError(f"event type {name!r} already exists for this application")
-    return f"event type created\n  id:   {event_type.id}\n  name: {event_type.name}"
+        et = await management.create_event_type(session, application_id=application_id, name=name)
+    except management.ManagementError as e:
+        raise CLIError(str(e))
+    return f"event type created\n  id:   {et.id}\n  name: {et.name}"
 
 
 async def cmd_add_endpoint(
     session, *, application_id: uuid.UUID, url: str, event_types: list[str]
 ) -> str:
-    await _require_application(session, application_id)
-    # Resolve every requested event type up front; fail before creating anything.
-    resolved = []
-    for name in event_types:
-        event_type = await session.scalar(
-            select(EventType).where(
-                EventType.application_id == application_id, EventType.name == name
-            )
+    try:
+        endpoint, secret = await management.create_endpoint(
+            session, application_id=application_id, url=url, event_type_names=event_types,
         )
-        if event_type is None:
-            raise CLIError(
-                f"event type {name!r} is not registered for this application — "
-                f"add it first:  add-event-type {application_id} {name}"
-            )
-        resolved.append(event_type)
-
-    secret = signing.generate_secret()
-    endpoint = Endpoint(application_id=application_id, url=url, secret=get_secret_box().seal(secret))
-    session.add(endpoint)
-    await session.flush()
-    for event_type in resolved:
-        session.add(EndpointEventType(endpoint_id=endpoint.id, event_type_id=event_type.id))
-    await session.commit()
-
-    subscribed = ", ".join(e.name for e in resolved)
+    except management.ManagementError as e:
+        raise CLIError(str(e))
     return (
         f"endpoint created\n"
         f"  id:     {endpoint.id}\n"
         f"  url:    {endpoint.url}\n"
-        f"  events: {subscribed}\n"
+        f"  events: {', '.join(event_types)}\n"
         f"  secret: {secret}\n"
         f"  (give this signing secret to the receiver — it verifies deliveries with it)"
     )
