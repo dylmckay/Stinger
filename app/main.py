@@ -39,7 +39,13 @@ def create_app() -> FastAPI:
     engine = create_async_engine(settings.DATABASE_URL, pool_size=10, max_overflow=5)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-    app = FastAPI(title="Stinger", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Stinger",
+        version="0.2.0",
+        lifespan=lifespan,
+        description="A self-hostable webhook delivery platform built in Python with FastAPI." \
+        "Automatic retries and backoff, HMAC signatures, circuit breaker for dead endpoints, and more."
+    )
     app.state.engine = engine
     app.state.session_factory = session_factory
 
