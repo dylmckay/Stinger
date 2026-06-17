@@ -33,6 +33,8 @@ jobs:
       # spin up Postgres; no services: block needed.
       - name: Run tests
         run: uv run pytest -q
+        env:
+          SECRET_KEY: test-secret-key-for-ci
 
   build-and-push:
     needs: test
