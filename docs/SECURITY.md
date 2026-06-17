@@ -48,6 +48,41 @@ rotation runs a dual-sign overlap window so secrets can be rotated without a
 verification gap. The consumer-side details are in
 [receiving-webhooks.md](receiving-webhooks.md).
 
+### Signing secrets at rest
+
+HMAC signing needs the raw key bytes at delivery time, so signing secrets cannot
+be hashed the way API keys are — they must be stored recoverably. Stinger seals
+them under **envelope encryption** before writing to Postgres:
+
+- Each secret is encrypted under its own fresh 256-bit data key (DEK) using
+  AES-256-GCM.
+- The DEK is then wrapped under a key-encryption key (KEK) derived from
+  `STINGER_ENCRYPTION_KEY` (or `SECRET_KEY` as a zero-config fallback) via
+  HKDF-SHA256 with a scheme-specific info string, producing a key distinct from
+  the cookie-signing key even when the same material is used.
+- The token stored in Postgres (`stcr.v1.…`) carries the wrapped DEK alongside
+  the ciphertext, so the column is self-contained and the KEK never enters the
+  database.
+- Both layers (DEK-over-plaintext, KEK-over-DEK) use AES-256-GCM, so tampering
+  is rejected at open time rather than silently decrypting to garbage.
+- The token's header (version + provider id) is the GCM additional authenticated
+  data, binding each ciphertext to the scheme that produced it.
+
+The practical consequence: **a database dump no longer exposes signing secrets.**
+An attacker with a copy of Postgres cannot forge webhook deliveries your receivers
+accept without also obtaining the KEK from your environment.
+
+**The encryption key is load-bearing.** Losing it makes every signing secret
+unrecoverable and every receiver would need to be re-provisioned with a new
+secret. Back it up with the same care as a private key. If you set
+`STINGER_ENCRYPTION_KEY`, ensure it is present in every environment where
+`alembic upgrade` runs (the docker-compose `migrate` service reads it from the
+same `x-app` env block as `SECRET_KEY`).
+
+A future `KmsKeyProvider` (AWS KMS, Vault, HSM) is a drop-in at the provider
+boundary; the local provider is the default because it keeps Postgres as the only
+stateful dependency while still closing the database-dump attack.
+
 ### API keys
 
 API keys are high-entropy random values, stored **only as a SHA-256 hash** —
@@ -75,20 +110,10 @@ be set to a strong, unique value.
 
 Stated plainly. Their absence is a known boundary, not an oversight.
 
-- **Signing secrets are stored recoverably, not encrypted at rest.** HMAC signing
-  needs the secret bytes at delivery time, so signing secrets *cannot* be hashed
-  the way API keys are — they live as plaintext in Postgres. A database
-  compromise therefore exposes them, which would let an attacker forge deliveries
-  your receivers accept. Until envelope encryption (a KMS-wrapped data key) is
-  added, **restricting and protecting database access is the single most
-  important operational control.**
 - **No rate limiting on ingest.** A valid API key can publish without throttling;
   protect the ingest endpoint at your proxy if abuse is a concern.
 - **HTTP only.** Stinger speaks plain HTTP and does not manage certificates — run
   it behind a TLS-terminating reverse proxy.
-- **Response bodies are read fully before truncation**, so a malicious receiver
-  returning a very large body consumes memory proportional to it (bounded by the
-  15-second delivery deadline, not by a byte cap).
 - **No 2FA, SSO, or audit log** on the dashboard — access is a single credential,
   the API key.
 
@@ -99,9 +124,14 @@ The broader deferred-work list is in the
 
 - Set a strong, unique `SECRET_KEY`:
   `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+- Set a dedicated `STINGER_ENCRYPTION_KEY` (separate from `SECRET_KEY`) and back
+  it up securely. Without it, `SECRET_KEY` is used as the fallback key-encryption
+  key — functional, but a single secret then protects both session cookies and
+  signing secrets. Generate one the same way as `SECRET_KEY`.
 - Keep `ALLOW_PRIVATE_TARGETS=false` in production.
 - Run behind a TLS-terminating reverse proxy.
-- Restrict network access to Postgres, and treat the database as holding signing
-  secrets in recoverable form.
+- Restrict network access to Postgres. A database dump no longer exposes signing
+  secrets, but the database still holds encrypted tokens and all event/delivery
+  data, so access control remains important.
 - Rotate endpoint signing secrets periodically (dashboard, or the `rotate-secret`
   action), and rotate API keys as needed.
