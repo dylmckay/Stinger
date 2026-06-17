@@ -1,0 +1,56 @@
+{# The whole endpoints region. Re-rendered on create (form resets; the new
+   card carries its revealed secret for this render only). Swapped as the
+   hx-target of both forms, so success and validation errors share one path. #}
+<div id="ep-content">
+  <section class="creator">
+    <form class="ep-form" hx-post="/dashboard/endpoints" hx-target="#ep-content" hx-swap="outerHTML">
+      <div class="field">
+        <label for="ep-url">New endpoint URL</label>
+        <input id="ep-url" name="url" type="url" inputmode="url"
+               placeholder="https://example.com/webhooks"
+               value="{{ form_url or '' }}" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>Subscribe to event types</label>
+        {% if event_types %}
+          <div class="check-grid">
+            {% for et in event_types %}
+              <label class="check">
+                <input type="checkbox" name="event_types" value="{{ et.name }}"
+                       {% if et.name in selected %}checked{% endif %}>
+                <span>{{ et.name }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">No event types yet — add one below first.</p>
+        {% endif %}
+      </div>
+      <button class="btn-primary" type="submit" {% if not event_types %}disabled{% endif %}>Create endpoint</button>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    </form>
+
+    <form class="quick-add" hx-post="/dashboard/endpoints/event-types" hx-target="#ep-content" hx-swap="outerHTML">
+      <div class="field">
+        <label for="qa-name">Quick-add event type</label>
+        <div class="inline-row">
+          <input id="qa-name" name="name" type="text" placeholder="invoice.paid"
+                 value="{{ et_name or '' }}" autocomplete="off" spellcheck="false">
+          <button class="btn-secondary" type="submit">Add type</button>
+        </div>
+      </div>
+      {% if et_error %}<p class="error">{{ et_error }}</p>{% endif %}
+      <p class="hint muted">Manage all event types on the <a href="/dashboard/event-types">Event types</a> page.</p>
+    </form>
+  </section>
+
+  <div class="cards" id="ep-list">
+    {% if cards %}
+      {% for card in cards %}
+        {% include "_endpoint_card.html" %}
+      {% endfor %}
+    {% else %}
+      <p class="muted">No endpoints yet. Create one above to start receiving deliveries.</p>
+    {% endif %}
+  </div>
+</div>

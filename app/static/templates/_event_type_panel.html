@@ -1,0 +1,29 @@
+{# Full event-types panel: re-rendered on create. Swapped as the form's
+   hx-target, so the new type appears in the list and the form resets (or shows
+   an error with the entered name preserved) in one round trip. #}
+<div id="et-panel">
+  <form class="inline-form" hx-post="/dashboard/event-types" hx-target="#et-panel" hx-swap="outerHTML">
+    <div class="field">
+      <label for="et-name">New event type</label>
+      <div class="inline-row">
+        <input id="et-name" name="name" type="text" placeholder="invoice.paid"
+               value="{{ name or '' }}" autocomplete="off" spellcheck="false">
+        <button class="btn-primary" type="submit">Add</button>
+      </div>
+    </div>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  </form>
+
+  <div class="type-list" id="et-list">
+    {% if event_types %}
+      {% for et in event_types %}
+        <div class="type-row">
+          <span class="type-name">{{ et.name }}</span>
+          <span class="muted">{{ et.created_at | age }}</span>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted">No event types yet. Add one above, then create an endpoint that subscribes to it.</p>
+    {% endif %}
+  </div>
+</div>
