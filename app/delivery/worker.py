@@ -12,9 +12,10 @@ import asyncio
 import logging
 import random
 import socket
+import time
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
@@ -23,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.delivery import signing
 from app.delivery.claim import claim_deliveries
 from app.delivery.http import attempt_delivery
-from app.delivery.record import discard_delivery, record_attempt
+from app.delivery.record import DEFAULT_BREAKER_COOLDOWN, discard_delivery, promote_half_open_endpoints, record_attempt
 from app.models import Delivery, Endpoint, Event, EndpointStatus
 from app.crypto import get_secret_box
 
@@ -44,6 +45,8 @@ class Worker:
         poll_interval: float = 2.0,
         lease_seconds: int = 30,
         allow_private: bool = False,
+        cooldown: timedelta = DEFAULT_BREAKER_COOLDOWN,
+        recover_interval: float = 15.0
     ) -> None:
         self._sf = session_factory
         self._client = client
@@ -51,6 +54,9 @@ class Worker:
         self._poll = poll_interval
         self._lease = lease_seconds
         self._allow_private = allow_private
+        self._cooldown = cooldown
+        self._recover_interval = recover_interval
+        self._last_recover = 0.0
         self.worker_id = f"{socket.gethostname()}:{uuid.uuid4().hex[:8]}"
         self._inflight: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
@@ -67,6 +73,7 @@ class Worker:
     async def run(self) -> None:
         log.info("worker %s starting", self.worker_id)
         while not self._stop.is_set():
+            await self._maybe_recover()
             free = self._max - len(self._inflight)
             if free > 0:
                 async with self._sf() as session:
@@ -115,7 +122,7 @@ class Worker:
         return {e.id: e for e in eps}, {e.id: e for e in evs}
 
     async def _process(self, delivery: Delivery, endpoint: Endpoint, event: Event) -> None:
-        if endpoint.status != EndpointStatus.ENABLED:
+        if endpoint.status == EndpointStatus.DISABLED:
             # Endpoint is disabled (breaker tripped): void the delivery, no POST.
             async with self._sf() as s:
                 await discard_delivery(s, delivery=delivery, worker_id=self.worker_id)
@@ -142,6 +149,20 @@ class Worker:
         if self._inflight:
             log.info("draining %d in-flight deliveries", len(self._inflight))
             await asyncio.gather(*self._inflight, return_exceptions=True)
+    
+
+    async def _maybe_recover(self) -> None:
+        """Throttled half-open sweep: promote cooled-down disabled endpoints and
+        enqueue their trial deliveries, which the very next claim picks up."""
+        now = time.monotonic()
+        if now - self._last_recover < self._recover_interval:
+            return
+        self._last_recover = now
+        try:
+            async with self._sf() as session:
+                await promote_half_open_endpoints(session, cooldown=self._cooldown)
+        except Exception:
+            log.exception("half-open recovery sweep failed")
 
 
 async def _sleep_unless_stopped(stop: asyncio.Event, seconds: float) -> None:

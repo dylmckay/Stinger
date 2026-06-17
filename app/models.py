@@ -27,6 +27,7 @@ def _uuid7() -> uuid.UUID:
 class EndpointStatus(enum.StrEnum):
     ENABLED = "enabled"
     DISABLED = "disabled"
+    HALF_OPEN = "half_open"
 
 
 class DeliveryStatus(enum.StrEnum):
@@ -65,7 +66,7 @@ class Endpoint(TimestampMixin, Base):
     __tablename__ = "endpoints"
     __table_args__ = (
         CheckConstraint(
-            f"status IN ('{EndpointStatus.ENABLED}', '{EndpointStatus.DISABLED}')",
+            f"status IN ('{EndpointStatus.ENABLED}', '{EndpointStatus.DISABLED}', {EndpointStatus.HALF_OPEN})",
             name="status_valid",
         ),
     )

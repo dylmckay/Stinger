@@ -25,7 +25,7 @@ import random
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import func, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.delivery import signing
@@ -49,6 +49,8 @@ MAX_RETRY_AFTER_S = 24 * 60 * 60.0         # ceiling: a receiver can't push retr
 MAX_RESPONSE_BODY = 2048        # chars of response body retained on an attempt row
 DEFAULT_FAILURE_THRESHOLD = 20  # consecutive endpoint failures before auto-disable
 DEFAULT_ROTATION_WINDOW = timedelta(hours=24)  # overlap window where both secrets sign
+DEFAULT_BREAKER_COOLDOWN = timedelta(minutes=5) # disabled -> half-open trial after 5 minutes
+# Must dwarf the lease (30s) so a half-open endpoint never has more than its single trial delivery in flight
 
 
 @dataclass(frozen=True)
@@ -132,30 +134,50 @@ async def record_attempt(
 
     # --- circuit breaker: same transaction as the outcome ---
     if result.succeeded:
+        # Reset the failure counter; if this was a half-open trial, recover.
         await session.execute(
             update(Endpoint)
             .where(Endpoint.id == delivery.endpoint_id)
-            .values(consecutive_failures=0)
+            .values(
+                consecutive_failures=0,
+                status=case(
+                    (Endpoint.status == EndpointStatus.HALF_OPEN, EndpointStatus.ENABLED),
+                    else_=Endpoint.status,
+                ),
+                disabled_at=case(
+                    (Endpoint.status == EndpointStatus.HALF_OPEN, None),
+                    else_=Endpoint.disabled_at,
+                ),
+            )
         )
     else:
-        bumped = (await session.execute(
+        # A failed half-open trial drops straight back to disabled with a FRESH
+        # cooldown, and skips the normal increment/threshold path.
+        demoted = (await session.execute(
             update(Endpoint)
-            .where(Endpoint.id == delivery.endpoint_id)
-            .values(consecutive_failures=Endpoint.consecutive_failures + 1)
-            .returning(Endpoint.consecutive_failures)
-        )).scalar_one()
-        if bumped >= failure_threshold:
-            # One-time trip: WHERE status='enabled' so concurrent failures
-            # crossing the threshold together disable exactly once and stamp
-            # disabled_at exactly once.
-            await session.execute(
-                update(Endpoint)
-                .where(
-                    Endpoint.id == delivery.endpoint_id,
-                    Endpoint.status == EndpointStatus.ENABLED,
-                )
-                .values(status=EndpointStatus.DISABLED, disabled_at=func.now())
+            .where(
+                Endpoint.id == delivery.endpoint_id,
+                Endpoint.status == EndpointStatus.HALF_OPEN,
             )
+            .values(status=EndpointStatus.DISABLED, disabled_at=func.now())
+            .returning(Endpoint.id)
+        )).first()
+        if demoted is None:
+            bumped = (await session.execute(
+                update(Endpoint)
+                .where(Endpoint.id == delivery.endpoint_id)
+                .values(consecutive_failures=Endpoint.consecutive_failures + 1)
+                .returning(Endpoint.consecutive_failures)
+            )).scalar_one()
+            if bumped >= failure_threshold:
+                await session.execute(
+                    update(Endpoint)
+                    .where(
+                        Endpoint.id == delivery.endpoint_id,
+                        Endpoint.status == EndpointStatus.ENABLED,
+                    )
+                    .values(status=EndpointStatus.DISABLED, disabled_at=func.now())
+                )
 
     session.add(
         DeliveryAttempt(
@@ -209,6 +231,56 @@ async def reenable_endpoint(
     )).first()
     await session.commit()
     return found is not None
+
+
+async def promote_half_open_endpoints(
+    session: AsyncSession, *, cooldown: timedelta = DEFAULT_BREAKER_COOLDOWN
+) -> int:
+    """Half-open recovery sweep: move disabled endpoints whose cooldown has
+    elapsed to `half_open` and enqueue ONE trial delivery each (a re-drive of the
+    endpoint's most recent delivery). Returns the number of trials enqueued.
+
+    Fan-out skips non-enabled endpoints, so a half-open endpoint has exactly this
+    one trial in flight; the worker gate lets it through, and record_attempt
+    resolves the outcome (success -> enabled, failure -> disabled + fresh cooldown).
+
+    Safe to run concurrently from many workers: the `status='disabled'` CAS makes
+    each promotion fire exactly once, and only the winning worker (which gets the
+    id back via RETURNING) enqueues the trial.
+    """
+    promoted = (await session.execute(
+        update(Endpoint)
+        .where(
+            Endpoint.status == EndpointStatus.DISABLED,
+            Endpoint.disabled_at.is_not(None),
+            Endpoint.disabled_at + cooldown <= func.now(),
+        )
+        .values(status=EndpointStatus.HALF_OPEN)
+        .returning(Endpoint.id)
+    )).scalars().all()
+
+    enqueued = 0
+    for endpoint_id in promoted:
+        last = await session.scalar(
+            select(Delivery)
+            .where(Delivery.endpoint_id == endpoint_id)
+            .order_by(Delivery.id.desc())
+            .limit(1)
+        )
+        if last is None:
+            # Nothing to probe (shouldn't happen for a tripped endpoint): give it
+            # the benefit of the doubt rather than stranding it half-open forever.
+            await session.execute(
+                update(Endpoint)
+                .where(Endpoint.id == endpoint_id, Endpoint.status == EndpointStatus.HALF_OPEN)
+                .values(status=EndpointStatus.ENABLED, disabled_at=None, consecutive_failures=0)
+            )
+            continue
+        session.add(Delivery(event_id=last.event_id, endpoint_id=endpoint_id))
+        enqueued += 1
+
+    await session.commit()
+    return enqueued
 
 
 async def rotate_endpoint_secret(
