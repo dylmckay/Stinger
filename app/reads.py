@@ -123,6 +123,12 @@ async def list_endpoints(session: AsyncSession, *, application_id: uuid.UUID) ->
     return [(ep, by_endpoint.get(ep.id, [])) for ep in endpoints]
 
 
+async def list_event_types(session: AsyncSession, *, application_id: uuid.UUID) -> list[EventType]:
+    return list((await session.scalars(
+        select(EventType).where(EventType.application_id == application_id).order_by(EventType.name)
+    )).all())
+
+
 async def replay_delivery(session: AsyncSession, *, application_id: uuid.UUID, delivery_id: uuid.UUID) -> uuid.UUID | None:
     """Re-deliver an existing event to its endpoint by inserting a FRESH
     delivery row for the same (event, endpoint). The original's history is
