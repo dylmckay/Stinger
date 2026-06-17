@@ -176,6 +176,18 @@ smoothing for legibility. All scheduling resolves against Postgres's clock
 (`now()`), never the worker's wall clock, so lease and backoff timing never
 depend on whose clock you trust.
 
+When a receiver answers with `Retry-After` (typically on a `429`, also valid on
+`503`), Stinger honors it: the header value — delta-seconds or an HTTP-date — is
+parsed and used as the next delay instead of the schedule slot, clamped to a
+ceiling so a receiver can't push a retry arbitrarily far out, and jittered
+*upward only* so we never come back **before** the time the receiver asked for.
+Crucially, `Retry-After` moves *when* the next attempt happens, not *whether*:
+the attempt still counts against the retry budget, so a receiver that keeps
+asking for more time cannot hold a delivery open forever. This is the difference
+between a backoff schedule and being a polite citizen of someone else's rate
+limiter — we respect explicit backpressure rather than hammering our own
+fixed cadence into a service that's already told us to slow down.
+
 ### Polling is the floor; `LISTEN/NOTIFY` is an optimization
 
 The worker polls on an interval, and that poll is the *only* thing correctness
@@ -188,6 +200,17 @@ that instant) and it can't schedule a future retry, so the system must be — an
 is — fully correct with polling alone. The listener uses a raw connection held
 *outside* the SQLAlchemy pool, because a pooled connection would eventually be
 recycled and silently drop the `LISTEN`.
+
+Because the listener is an optimization, losing it is survivable — but a platform
+that silently degrades to poll-interval latency on the first database blip and
+never recovers isn't production-grade. So the listener **self-heals**: it runs in
+a reconnect loop with capped exponential backoff, and on every successful
+(re)connect it wakes the worker once. That wake matters for correctness of the
+*optimization* — `NOTIFY` is lossy, so any pings that fired while the listener
+was disconnected were missed, and the wake forces a poll that sweeps up whatever
+arrived during the gap. The connection-lost path is driven by asyncpg's
+termination callback, so a dropped connection is detected promptly rather than
+discovered only on the next failed use.
 
 ### Worker concurrency and shutdown
 
@@ -230,12 +253,33 @@ single-table, and drains the backlog with zero HTTP to the dead host. The only
 cost is a tiny staleness window — an endpoint loaded just before it's disabled
 gets one more POST, which is benign.
 
-Recovery is **manual re-enable** (which resets the counter and clears
-`disabled_at`) followed by **replay** to re-drive the discarded deliveries.
-Auto-disable plus manual-re-enable-with-replay is the loop that distinguishes a
-real platform from `requests.post` in a loop. A `410 Gone` currently counts
-toward the threshold like any other failure; it is arguably a stronger "disable
-me now" signal, but treating it uniformly is the simpler choice for now.
+Recovery is **automatic, via a half-open probe**, with manual re-enable still
+available as an override. A disabled endpoint sits for a cooldown; then a
+periodic worker sweep transitions it `disabled → half_open` and enqueues a single
+**trial delivery** — a re-drive of the endpoint's most recent delivery, so a
+successful probe also delivers a real event that was previously dropped. If the
+trial succeeds the endpoint goes `half_open → enabled` (counter reset,
+`disabled_at` cleared); if it fails it drops straight back to `disabled` with a
+*fresh* cooldown, so a still-dead endpoint is probed on a slow heartbeat rather
+than hammered. The whole cycle resolves inside the existing `record_attempt`
+transaction, so the endpoint's state never diverges from the trial's outcome.
+
+Three properties make this safe with no new locking. Fan-out targets only
+*enabled* endpoints, so a half-open endpoint receives no organic traffic — its
+trial is the *only* delivery it has in flight, which is why the worker gate lets
+a half-open attempt through where it discards a disabled one, and why the
+cooldown is set to dwarf the lease (a trial always resolves long before the next
+sweep could consider re-probing). The `disabled → half_open` transition is the
+same one-time CAS as the trip (`WHERE status = 'disabled'`), so when many workers
+sweep concurrently exactly one wins and enqueues exactly one trial. And even the
+pathological interleaving is benign: whichever attempt records first wins the
+`half_open` transition through its CAS, and a straggler finds the status already
+moved and falls through harmlessly. Auto-disable plus half-open recovery — with
+re-enable-and-replay still there for an operator who's fixed the receiver and
+doesn't want to wait out the cooldown — is the loop that distinguishes a real
+platform from `requests.post` in a loop. A `410 Gone` currently counts toward the
+threshold like any other failure; it is arguably a stronger "disable me now"
+signal, but treating it uniformly is the simpler choice for now.
 
 ---
 
@@ -383,6 +427,34 @@ publishes always create fresh events.
 
 ---
 
+## Management surface
+
+Creating endpoints and event types is exposed three ways — the admin CLI, an
+authenticated JSON API (`/api/v1/endpoints`, `/api/v1/event-types`), and
+dashboard forms — but the creation rules live in **exactly one place**, a
+`management` core that all three call. Event-type resolution, the http/https URL
+validation, signing-secret generation and sealing, and subscription wiring are
+written once; the surfaces only translate transport and errors (a duplicate
+becomes a `409` on the API, an inline form error on the dashboard, a non-zero
+CLI exit). The alternative — re-deriving "create an endpoint" in each entry
+point — is how three subtly different behaviours drift into existence; a created
+endpoint should be identical no matter how it was created.
+
+Two deliberate seams. The signing secret is returned exactly once at creation and
+only its sealed form is ever persisted (the same show-once contract as API keys
+and rotation), so no surface can leak it on a later read. And URL validation is
+*format only* — scheme and host — not reachability: the worker's SSRF guard
+resolves and pins the address at delivery time, which is the real security
+boundary, so validating reachability at creation would only add flakiness (DNS,
+transient outages) and false confidence that a host vetted once stays safe.
+
+The CLI remains the bootstrap path for the very first application and key,
+because those precede any credential that could authenticate an API call — the
+same chicken-and-egg that keeps key minting out-of-band. Everything after that
+first key can be driven from the API or the dashboard without touching the CLI.
+
+---
+
 ## Authentication
 
 ### SHA-256 for API keys, not bcrypt
@@ -453,16 +525,15 @@ than a demo:
 
 Honest scope boundaries, listed so their absence reads as a decision:
 
-- **Breaker auto-recovery (half-open).** Disabled endpoints re-enable manually;
-  a half-open state (a cooldown, then a trial delivery that re-enables on
-  success) is a future enhancement.
 - **Time-window disable trigger.** The breaker counts *consecutive failures*,
   which couples the trip to traffic volume; a sustained-time-window trigger
   ("failing continuously for >1h") is more volume-robust but needs extra state.
 - **Per-endpoint concurrency cap.** Global concurrency is bounded; a per-endpoint
   cap (to stop one slow consumer monopolizing the pool and to give rough
   per-endpoint ordering) is a refinement.
-- **`Retry-After` honoring** on 429 is not yet wired into the backoff.
+- **CSRF tokens on dashboard forms.** The dashboard's state-changing POSTs rely
+  on `SameSite` session cookies; a dedicated CSRF-token pass is a hardening
+  follow-up, not yet done.
 - **Payload transformations, fan-in/aggregation, and per-endpoint rate limiting**
   are out of scope by design.
 
