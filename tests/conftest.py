@@ -3,6 +3,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from testcontainers.postgres import PostgresContainer
 
+from app.crypto import get_secret_box
 from app.models import Base
 
 
@@ -37,3 +38,8 @@ def session_factory(engine):
     # expire_on_commit=False mirrors the production worker factory: the rows
     # claim_deliveries returns must stay usable after its short transaction commits.
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def secret_box():
+    return get_secret_box()
