@@ -144,6 +144,6 @@ def get_secret_box() -> SecretBox:
     distinct HKDF sub-key, not the cookie key itself). A dedicated key is
     recommended — see config.encryption_key_material.
     """
-    from app.config import get_settings
+    from app.config import encryption_key_material
 
-    return SecretBox(LocalKeyProvider(get_settings().encryption_key_material()))
+    return SecretBox(LocalKeyProvider(encryption_key_material()))
