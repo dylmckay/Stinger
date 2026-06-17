@@ -6,6 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
+from app.crypto import get_secret_box
 from app.models import Application, EventType, Endpoint, Event, Delivery, DeliveryAttempt
 from app.delivery import signing
 from app.delivery.worker import Worker
@@ -49,12 +50,13 @@ def receiver():
 async def test_worker_delivers_signs_and_records(session_factory, receiver):
     base, stats = receiver
     n_ok, n_fail = 25, 25
+    box = get_secret_box()
 
     async with session_factory() as s:
         app = Application(name="t"); s.add(app); await s.flush()
         et = EventType(application_id=app.id, name="invoice.paid"); s.add(et); await s.flush()
-        ok = Endpoint(application_id=app.id, url=f"{base}/ok", secret=SECRET)
-        fail = Endpoint(application_id=app.id, url=f"{base}/fail", secret=SECRET)
+        ok = Endpoint(application_id=app.id, url=f"{base}/ok", secret=box.seal(SECRET))
+        fail = Endpoint(application_id=app.id, url=f"{base}/fail", secret=box.seal(SECRET))
         s.add_all([ok, fail]); await s.flush()
         for i in range(n_ok + n_fail):
             ev = Event(application_id=app.id, event_type_id=et.id, payload=f'{{"seq":{i}}}')
