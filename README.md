@@ -10,26 +10,37 @@ Stinger's one design constraint shapes everything: **Postgres is the only
 stateful dependency.** No Redis, no message broker. You run `docker compose up`
 and get a working platform backed by a single database.
 
-> **Status: v0.1.0 — early.** The delivery engine, signing, SSRF protection,
-> circuit breaker, secret rotation, and dashboard are built and tested against
-> real Postgres. See [Project status](#project-status) for what's deferred.
+> **Status: v0.2.0.** The delivery engine, signing, SSRF protection, circuit
+> breaker (with half-open auto-recovery), secret rotation, encryption of signing
+> secrets at rest, a management API + dashboard forms, and `Retry-After` honoring
+> are built and tested against real Postgres. See [Project status](#project-status)
+> for what's deferred.
 
 ---
 
 ## Features
 
 - **At-least-once delivery** with a fixed retry schedule and bounded jitter
-  (`5s → 30s → 2m → 10m → 1h → 4h → 12h`, then exhausted).
+  (`5s → 30s → 2m → 10m → 1h → 4h → 12h`, then exhausted), and **`Retry-After`
+  honoring** so a `429`/`503` with a backoff hint is respected instead of
+  overridden.
 - **HMAC-SHA256 signatures**, [Standard Webhooks](https://www.standardwebhooks.com)
   compatible — your consumers verify with off-the-shelf libraries in any language.
 - **Secret rotation** with a dual-sign overlap window, so you rotate signing
   secrets without a verification gap.
-- **Circuit breaker** — endpoints that fail consistently are auto-disabled
-  instead of being hammered on every event; re-enable and replay when fixed.
+- **Signing secrets encrypted at rest** with envelope encryption (per-secret
+  data key, wrapped by a key derived from your environment) — a database dump no
+  longer exposes the secrets needed to forge deliveries.
+- **Circuit breaker with auto-recovery** — endpoints that fail consistently are
+  auto-disabled, then automatically probed with a single trial delivery after a
+  cooldown and re-enabled on success; manual re-enable + replay is still there.
 - **SSRF protection** — every delivery target is resolved and validated against
   private / loopback / metadata IP ranges, with the connection pinned to the
   vetted IP to close DNS-rebinding races.
 - **Idempotent publish** — retry a publish safely with an idempotency key.
+- **Manage everything without the CLI** — create and list endpoints and event
+  types over an authenticated JSON API or the dashboard; the CLI only bootstraps
+  the first application and key.
 - **Replay** — re-drive any delivery from the dashboard or API.
 - **Observable** — a server-rendered dashboard with a per-delivery attempt
   timeline, endpoint health, and an event log.
@@ -87,6 +98,12 @@ docker compose exec api python -m app.cli add-endpoint <application_id> \
 docker compose exec api python -m app.cli issue-key <application_id> --name prod
 ```
 
+The CLI bootstraps the first application and key (steps 1 and 4) because those
+precede any credential that could authenticate an API call. Once you have a key,
+steps 2 and 3 — registering event types and adding endpoints — can be done from
+the dashboard or the JSON API instead; see
+[Managing endpoints and event types](#managing-endpoints-and-event-types).
+
 Publish an event with the key:
 
 ```bash
@@ -113,6 +130,35 @@ The event fans out to every enabled endpoint subscribed to that type. A repeat
 publish with the same `idempotency_key` returns the existing event and does not
 re-fan-out, so publishing is safe to retry.
 
+## Managing endpoints and event types
+
+Beyond the bootstrap CLI, endpoints and event types can be created and listed
+over an authenticated JSON API or from the dashboard — a new user never has to
+touch the CLI after minting a key.
+
+JSON API (same `Bearer` key as publishing):
+
+```bash
+# Register an event type
+curl -X POST http://localhost:8000/api/v1/event-types \
+  -H "Authorization: Bearer sk_…" -H "Content-Type: application/json" \
+  -d '{"name": "invoice.paid"}'
+
+# Add an endpoint subscribed to one or more event types.
+# The response includes the signing secret ONCE — store it now.
+curl -X POST http://localhost:8000/api/v1/endpoints \
+  -H "Authorization: Bearer sk_…" -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/webhooks", "event_types": ["invoice.paid"]}'
+
+# List them
+curl http://localhost:8000/api/v1/event-types -H "Authorization: Bearer sk_…"
+curl http://localhost:8000/api/v1/endpoints   -H "Authorization: Bearer sk_…"
+```
+
+On the dashboard, the **Endpoints** page has a create form (with a quick-add for
+event types), and the **Event types** page manages the full set. Created
+endpoints show their signing secret once, in the same reveal used by rotation.
+
 ## Receiving & verifying
 
 Each delivery carries `webhook-id`, `webhook-timestamp`, and `webhook-signature`
@@ -127,6 +173,7 @@ Set in `.env` (read by Docker Compose). See [`.env.example`](.env.example).
 | Variable                | Required | Default | Purpose                                                              |
 | ----------------------- | -------- | ------- | -------------------------------------------------------------------- |
 | `SECRET_KEY`            | yes      | —       | Signs dashboard session cookies. Generate a fresh one for production. |
+| `STINGER_ENCRYPTION_KEY` | no      | derived | Key material for encrypting signing secrets at rest. Falls back to a key derived from `SECRET_KEY`; set a dedicated value to rotate it independently. Back it up like a private key — losing it makes stored signing secrets unrecoverable. |
 | `POSTGRES_USER/PASSWORD/DB` | yes  | —       | Credentials for the bundled Postgres service.                        |
 | `DATABASE_URL`          | no       | derived | Composed from `POSTGRES_*`; set only to use an external database.     |
 | `ALLOW_PRIVATE_TARGETS` | no       | `false` | Allow delivery to private/loopback IPs. Keep `false` in production.   |
@@ -154,14 +201,17 @@ uv run python -m app.worker_main        # delivery worker
 
 ## Project status
 
-v0.1.0. Built and tested: the delivery engine (fan-out, lease-based claim,
-retries, crash recovery), HMAC signing with rotation, SSRF protection, the
-circuit breaker, idempotent publish, replay, and the dashboard.
+v0.2.0. Built and tested: the delivery engine (fan-out, lease-based claim,
+retries, crash recovery), HMAC signing with rotation, signing secrets encrypted
+at rest, SSRF protection, the circuit breaker with half-open auto-recovery,
+`Retry-After` honoring, a self-healing `LISTEN/NOTIFY` listener, idempotent
+publish, replay, a management API and dashboard forms for endpoints and event
+types, and the dashboard with its per-delivery attempt timeline.
 
 Known limitations and deferred work are tracked honestly in the
 [architecture doc](docs/ARCHITECTURE.md#deferred--known-limitations) — including
-breaker auto-recovery, response-body streaming caps, and per-endpoint
-concurrency.
+a sustained-time-window breaker trigger, a per-endpoint concurrency cap, and
+CSRF tokens on the dashboard's forms.
 
 ## License
 
