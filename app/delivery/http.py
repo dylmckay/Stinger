@@ -9,6 +9,8 @@ function does not know or care how the signature was produced.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import time
 from collections.abc import Mapping
 
@@ -22,6 +24,24 @@ OVERALL_DEADLINE_S = 15.0                    # hard wall-clock cap < lease (30s)
 NON_RETRYABLE_STATUSES = frozenset({410})    # 410 Gone: consumer says stop
 MAX_RESPONSE_WIRE_BYTES = 65536   # wire-read ceiling; comfortably > MAX_RESPONSE_BODY bytes
 
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (RFC 9110: delta-seconds or HTTP-date) into
+    seconds-from-now. None if absent/unparseable; a past date clamps to 0."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():                 # delta-seconds
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max((when - datetime.now(timezone.utc)).total_seconds(), 0.0)
 
 async def attempt_delivery(
     client: httpx.AsyncClient,
@@ -100,4 +120,5 @@ async def attempt_delivery(
         False,
         retryable=resp.status_code not in NON_RETRYABLE_STATUSES,
         response_status=resp.status_code, response_body=body, latency_ms=latency,
+        retry_after_seconds=_parse_retry_after(resp.headers.get("retry-after"))
     )

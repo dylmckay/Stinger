@@ -44,6 +44,8 @@ RETRY_SCHEDULE: tuple[timedelta, ...] = (
     timedelta(hours=12),
 )
 JITTER_FRACTION = 0.2           # +/-20%, de-synchronizes a simultaneous failure batch
+MIN_RETRY_AFTER_S = 1.0         # floor for an honored Retry-After
+MAX_RETRY_AFTER_S = 24 * 60 * 60.0         # ceiling: a receiver can't push retries past 24h
 MAX_RESPONSE_BODY = 2048        # chars of response body retained on an attempt row
 DEFAULT_FAILURE_THRESHOLD = 20  # consecutive endpoint failures before auto-disable
 DEFAULT_ROTATION_WINDOW = timedelta(hours=24)  # overlap window where both secrets sign
@@ -62,11 +64,22 @@ class AttemptResult:
     response_body: str | None = None
     error: str | None = None
     latency_ms: int | None = None
+    retry_after_seconds: float | None = None
 
 
 def _jittered(delay: timedelta) -> timedelta:
     return delay * (1.0 + random.uniform(-JITTER_FRACTION, JITTER_FRACTION))
 
+def _next_retry_delay(attempt_count: int, retry_after_seconds: float | None) -> timedelta:
+    """Delay before the next attempt. A receiver's Retry-After (429/503) overrides
+    the schedule for TIMING only — clamped to a ceiling so a receiver can't push
+    retries arbitrarily far, and jittered upward-only so we never come back before
+    the time it asked for. The retry BUDGET is unchanged: Retry-After moves *when*,
+    not *whether*, and the attempt still counts toward exhaustion."""
+    if retry_after_seconds is not None:
+        secs = min(max(retry_after_seconds, MIN_RETRY_AFTER_S), MAX_RETRY_AFTER_S)
+        return timedelta(seconds=secs * (1.0 + random.uniform(0.0, JITTER_FRACTION)))
+    return _jittered(RETRY_SCHEDULE[attempt_count - 1])
 
 def _truncate(body: str | None) -> str | None:
     return None if body is None else body[:MAX_RESPONSE_BODY]
@@ -92,7 +105,7 @@ async def record_attempt(
         next_attempt_at = None
     elif result.retryable and new_count <= len(RETRY_SCHEDULE):
         new_status = DeliveryStatus.RETRYING
-        next_attempt_at = func.now() + _jittered(RETRY_SCHEDULE[new_count - 1])
+        next_attempt_at = func.now() + _next_retry_delay(new_count, result.retry_after_seconds)
     else:
         new_status = DeliveryStatus.EXHAUSTED
         next_attempt_at = None
