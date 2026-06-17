@@ -1,5 +1,3 @@
-"""Tests for the management core (app/management.py): event-type and endpoint
-creation, validation, tenant scoping, and secret sealing."""
 import uuid
 
 import pytest

@@ -1,5 +1,3 @@
-"""HTTP-level tests for the management API, driven through an ASGI transport
-exactly like test_auth.py — auth, status codes, and the show-once secret."""
 import httpx
 import pytest
 from fastapi import FastAPI
