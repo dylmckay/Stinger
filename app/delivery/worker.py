@@ -25,8 +25,10 @@ from app.delivery.claim import claim_deliveries
 from app.delivery.http import attempt_delivery
 from app.delivery.record import discard_delivery, record_attempt
 from app.models import Delivery, Endpoint, Event, EndpointStatus
+from app.crypto import get_secret_box
 
 log = logging.getLogger("stinger.worker")
+box = get_secret_box()
 
 
 class Worker:
@@ -119,11 +121,11 @@ class Worker:
         previous = None
         if endpoint.previous_secret and endpoint.previous_secret_expires_at:
             if endpoint.previous_secret_expires_at > datetime.now(timezone.utc):
-                previous = endpoint.previous_secret
+                previous = box.open(endpoint.previous_secret)
 
         headers = signing.sign(
             event.payload, message_id=str(event.id),
-            secret=endpoint.secret, previous_secret=previous,
+            secret=box.open(endpoint.secret), previous_secret=previous,
         )
         result = await attempt_delivery(
             self._client, url=endpoint.url, payload=event.payload,

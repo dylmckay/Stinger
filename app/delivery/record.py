@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.delivery import signing
 from app.models import Delivery, DeliveryAttempt, DeliveryStatus, Endpoint, EndpointStatus
+from app.crypto import get_secret_box
 
 # The retry schedule IS the documented delivery contract: one wait per entry,
 # applied between attempts. N entries -> N+1 total attempts before exhaustion.
@@ -221,7 +222,7 @@ async def rotate_endpoint_secret(
         .where(Endpoint.id == endpoint_id, Endpoint.application_id == application_id)
         .values(
             previous_secret=Endpoint.secret,
-            secret=new_secret,
+            secret=get_secret_box().seal(new_secret),
             previous_secret_expires_at=func.now() + window,
         )
         .returning(Endpoint.id)

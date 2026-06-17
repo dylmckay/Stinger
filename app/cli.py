@@ -25,6 +25,7 @@ from app.auth import create_api_key
 from app.config import get_settings
 from app.delivery import signing
 from app.models import Application, Endpoint, EndpointEventType, EventType
+from app.crypto import get_secret_box
 
 
 class CLIError(Exception):
@@ -84,7 +85,7 @@ async def cmd_add_endpoint(
         resolved.append(event_type)
 
     secret = signing.generate_secret()
-    endpoint = Endpoint(application_id=application_id, url=url, secret=secret)
+    endpoint = Endpoint(application_id=application_id, url=url, secret=get_secret_box().seal(secret))
     session.add(endpoint)
     await session.flush()
     for event_type in resolved:
