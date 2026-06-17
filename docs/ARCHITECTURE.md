@@ -273,6 +273,29 @@ Everything else — other 4xx/5xx, timeouts, connection errors, SSRF blocks — 
 failure; transient ones retry, the SSRF block does not (a misconfigured internal
 URL won't fix itself).
 
+### Response-body streaming cap
+
+The response body is streamed off the wire with a hard byte ceiling rather than
+buffered in full before truncation. Without a wire cap, a receiver that streams a
+multi-megabyte body fast enough to outrun the 15-second deadline would consume
+memory proportional to body size, not to time. The deadline and the cap are
+complementary constraints: the deadline bounds *time*, the cap bounds *size*, and
+together they close both attack angles.
+
+The delivery also sends `accept-encoding: identity`, disabling compression. A
+compressed response is decoded before the byte count is checked, so without this
+header a receiver could serve a small compressed payload that expands to an
+arbitrarily large decoded body — a classic zip-bomb variant. With `identity`,
+what's on the wire is what's counted.
+
+Two constants govern the behaviour: `MAX_RESPONSE_WIRE_BYTES` (the ceiling on
+bytes pulled off the wire), and the existing `MAX_RESPONSE_BODY` (the cap on
+characters retained in the attempt row). A small response is never truncated;
+a large one stops being read at the wire ceiling, and whatever was read is then
+trimmed to `MAX_RESPONSE_BODY` before storage. *Rejected:* raising the read
+timeout instead — a longer timeout doesn't bound size at all and would delay
+crash recovery for every timed-out delivery.
+
 ---
 
 ## Signing
@@ -298,6 +321,50 @@ Consumer-side verification uses a constant-time comparison (`hmac.compare_digest
 and a timestamp tolerance window for replay protection. Constant-time matters
 here specifically because the consumer compares a secret-derived value an
 attacker partially controls.
+
+### Signing secrets at rest
+
+Signing secrets cannot be hashed the way API keys are: HMAC needs the raw key
+bytes at delivery time, so the secret must exist in recoverable form. The answer
+is envelope encryption, not a single static key.
+
+**Why envelope, not direct encryption:** each secret is sealed under its own
+fresh 256-bit data key (DEK) using AES-256-GCM; the DEK is then *wrapped* under
+a long-lived key-encryption key (KEK). The stored column token carries the
+wrapped DEK alongside the ciphertext, so the column is fully self-contained. This
+buys two things a direct-encryption approach can't: KEK rotation without
+rewriting ciphertext (rewrap the small DEKs, leave the ciphertext alone), and a
+clean KMS seam — the KEK provider is the only thing that ever touches the KEK, so
+a future `KmsKeyProvider` (AWS KMS, Vault, HSM) is a drop-in that keeps the KEK
+out of the process entirely.
+
+**Token format** (stored verbatim in the existing `TEXT` column, no schema
+change):
+
+```
+stcr.v1.<provider>.<wrapped_dek>.<dek_nonce>.<nonce>.<ct>   (each field base64url)
+```
+
+The `stcr.` prefix makes encrypted tokens trivially distinguishable from legacy
+`whsec_…` values, which the data migration uses to seal idempotently. The
+version and provider id fields are the GCM additional authenticated data for
+both inner and outer AEAD layers, so tampering with the header is rejected at
+open time, not silently ignored.
+
+**The default `LocalKeyProvider`** derives its KEK from `STINGER_ENCRYPTION_KEY`
+(or `SECRET_KEY` as a zero-config fallback) via HKDF-SHA256 with a fixed,
+scheme-specific info string. The derived KEK is a distinct value from the
+cookie-signing key even when the same source material is used. No additional
+stateful dependency is introduced — Postgres remains the only one.
+
+**The practical consequence:** a database dump no longer exposes signing secrets.
+An attacker with a copy of Postgres cannot forge webhook deliveries without also
+obtaining the KEK from the environment.
+
+**The operational trade-off:** the encryption key is now load-bearing. Losing it
+makes all signing secrets unrecoverable; every receiver would need to be
+re-provisioned with a new secret. It must be backed up with the same care as a
+private key.
 
 ---
 
@@ -386,19 +453,12 @@ than a demo:
 
 Honest scope boundaries, listed so their absence reads as a decision:
 
-- **Response-body memory cap.** The current attempt reads the full response body
-  before truncating; a hardened version streams with a byte cap. The 15s deadline
-  bounds a slow drip but not a fast flood.
 - **Breaker auto-recovery (half-open).** Disabled endpoints re-enable manually;
   a half-open state (a cooldown, then a trial delivery that re-enables on
   success) is a future enhancement.
 - **Time-window disable trigger.** The breaker counts *consecutive failures*,
   which couples the trip to traffic volume; a sustained-time-window trigger
   ("failing continuously for >1h") is more volume-robust but needs extra state.
-- **Secret-rotation action.** Dual-signing during rotation is wired on the
-  delivery side (the worker reads `previous_secret` / `previous_secret_expires_at`
-  and signs with both), but the management action that *sets* those columns and
-  starts the rotation window is still to come.
 - **Per-endpoint concurrency cap.** Global concurrency is bounded; a per-endpoint
   cap (to stop one slow consumer monopolizing the pool and to give rough
   per-endpoint ordering) is a refinement.
