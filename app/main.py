@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse
 from app.api import dashboard as api_dashboard
 from app.api import deps as api_deps
 from app.api import events as api_events
+from app.api import management as api_management
 from app.config import get_settings
 from app.web.app import create_web_app
 
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
 
     app.dependency_overrides[api_deps.get_session] = get_session
     app.include_router(api_events.router)
+    app.include_router(api_management.router)
     app.include_router(api_dashboard.router)
 
     @app.get("/healthz")
