@@ -39,7 +39,7 @@ def _canonical(payload: Any) -> str:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
-async def publish_event(session: AsyncSession, *, application_id: uuid.UUID, event_type_name: str, payload: Any,idempotency_key: str | None = None) -> PublishResult:
+async def publish_event(session: AsyncSession, *, application_id: uuid.UUID, event_type_name: str, payload: Any, idempotency_key: str | None = None) -> PublishResult:
     event_type = await session.scalar(
         select(EventType).where(
             EventType.application_id == application_id,
