@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
@@ -15,6 +15,7 @@ from app import reads
 from app.delivery.record import reenable_endpoint, rotate_endpoint_secret
 from app.models import Application, Delivery, Endpoint, EndpointEventType, Event, EventType
 from app.web.deps import current_application_web, get_session, is_htmx
+from app import management
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -140,7 +141,28 @@ async def replay(
     return Response(status_code=204, headers={"HX-Redirect": f"/dashboard/deliveries/{new_id}"})
 
 
-# ---- endpoints page ----
+# ---- endpoints page (create + list) ----
+
+async def _endpoints_content_ctx(
+    session, application_id, *,
+    revealed_id=None, revealed_secret=None,
+    error=None, form_url="", selected=(),
+    et_error=None, et_name="",
+) -> dict:
+    """Context for _ep_content.html. On a successful create, pass the new
+    endpoint's id + secret so that one card renders its reveal block (once)."""
+    pairs = await reads.list_endpoints(session, application_id=application_id)
+    cards = [
+        _card_ctx(ep, types, revealed_secret if ep.id == revealed_id else None)
+        for ep, types in pairs
+    ]
+    event_types = await reads.list_event_types(session, application_id=application_id)
+    return {
+        "cards": cards,
+        "event_types": event_types,
+        "error": error, "form_url": form_url, "selected": list(selected),
+        "et_error": et_error, "et_name": et_name,
+    }
 
 def _card_ctx(ep: Endpoint, types: list[str], revealed_secret: str | None = None) -> dict:
     now = datetime.now(timezone.utc)
@@ -181,11 +203,8 @@ async def endpoints(
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
 ):
-    pairs = await reads.list_endpoints(session, application_id=application.id)
-    cards = [_card_ctx(ep, types) for ep, types in pairs]
-    return request.app.state.templates.TemplateResponse(
-        request, "endpoints.html", {"endpoints": cards}
-    )
+    ctx = await _endpoints_content_ctx(session, application.id)
+    return request.app.state.templates.TemplateResponse(request, "endpoints.html", ctx)
 
 
 @router.post("/endpoints/{endpoint_id}/reenable")
@@ -224,6 +243,89 @@ async def rotate_ep(
     )
 
 
+@router.post("/endpoints")
+async def create_endpoint_web(
+    request: Request,
+    url: str = Form(""),
+    event_types: list[str] | None = Form(None),
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    event_types = event_types or []
+    templates = request.app.state.templates
+    if not event_types:
+        ctx = await _endpoints_content_ctx(
+            session, application.id,
+            error="Select at least one event type.", form_url=url, selected=event_types,
+        )
+        return templates.TemplateResponse(request, "_ep_content.html", ctx)
+    try:
+        endpoint, secret = await management.create_endpoint(
+            session, application_id=application.id, url=url, event_type_names=event_types,
+        )
+    except management.ManagementError as e:
+        ctx = await _endpoints_content_ctx(
+            session, application.id, error=str(e), form_url=url, selected=event_types,
+        )
+        return templates.TemplateResponse(request, "_ep_content.html", ctx)
+    ctx = await _endpoints_content_ctx(
+        session, application.id, revealed_id=endpoint.id, revealed_secret=secret,
+    )
+    return templates.TemplateResponse(request, "_ep_content.html", ctx)
+ 
+ 
+@router.post("/endpoints/event-types")
+async def quick_add_event_type_web(
+    request: Request,
+    name: str = Form(""),
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    """Quick-add an event type from the endpoints page; re-renders the region so
+    the new type immediately appears as a checkbox in the create form."""
+    et_error = None
+    try:
+        await management.create_event_type(session, application_id=application.id, name=name)
+        name = ""
+    except management.ManagementError as e:
+        et_error = str(e)
+    ctx = await _endpoints_content_ctx(
+        session, application.id, et_error=et_error, et_name=("" if not et_error else name),
+    )
+    return request.app.state.templates.TemplateResponse(request, "_ep_content.html", ctx)
+ 
+ 
+# ---- event types page (full management surface) ----
+ 
+@router.get("/event-types")
+async def event_types_page(
+    request: Request,
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    types = await reads.list_event_types(session, application_id=application.id)
+    return request.app.state.templates.TemplateResponse(
+        request, "event_types.html", {"event_types": types}
+    )
+ 
+ 
+@router.post("/event-types")
+async def create_event_type_web(
+    request: Request,
+    name: str = Form(""),
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+):
+    error = None
+    try:
+        await management.create_event_type(session, application_id=application.id, name=name)
+    except management.ManagementError as e:
+        error = str(e)
+    types = await reads.list_event_types(session, application_id=application.id)
+    return request.app.state.templates.TemplateResponse(
+        request, "_event_type_panel.html",
+        {"event_types": types, "error": error, "name": ("" if not error else name)},
+    )
 # ---- events log ----
 
 async def _event_rows(session: AsyncSession, events) -> list[dict]:
