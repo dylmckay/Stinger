@@ -66,7 +66,7 @@ class Endpoint(TimestampMixin, Base):
     __tablename__ = "endpoints"
     __table_args__ = (
         CheckConstraint(
-            f"status IN ('{EndpointStatus.ENABLED}', '{EndpointStatus.DISABLED}', {EndpointStatus.HALF_OPEN})",
+            f"status IN ('{EndpointStatus.ENABLED}', '{EndpointStatus.DISABLED}', '{EndpointStatus.HALF_OPEN}')",
             name="status_valid",
         ),
     )
