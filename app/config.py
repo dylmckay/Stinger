@@ -25,10 +25,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     SECRET_KEY: str
     BACKEND_URL: str = "http://localhost:8000"
-    allow_private_targets: bool = Field(False, env="STINGER_ALLOW_PRIVATE")
+    allow_private_targets: bool = Field(False, validation_alias="STINGER_ALLOW_PRIVATE")
     STINGER_ENCRYPTION_KEY: str | None = None
 
-    model_config = SettingsConfigDict(env_file = str(_env_file), extra = "ignore")
+    model_config = SettingsConfigDict(env_file=str(_env_file), extra="ignore")
 
     def encryption_key_material(self) -> bytes:
         return encryption_key_material()
