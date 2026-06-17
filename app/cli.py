@@ -7,7 +7,7 @@ Run them inside the running container:
 
     docker compose exec api python -m app.cli create-application "Acme"
     docker compose exec api python -m app.cli add-event-type   <app_id> invoice.paid
-    docker compose exec api python -m app.cli add-endpoint      <app_id> https://example.com/hook --event-type invoice.paid
+    docker compose exec api python -m app.cli add-endpoint      <app_id> https://httpbin.org/post --event-type invoice.paid
     docker compose exec api python -m app.cli issue-key         <app_id> --name prod
 """
 from __future__ import annotations
