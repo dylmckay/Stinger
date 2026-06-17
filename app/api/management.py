@@ -51,7 +51,7 @@ async def create_event_type(
     except management.DuplicateEventType as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     except management.InvalidEventTypeName as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e))
 
 
 @router.get("/event-types", response_model=EventTypeListOut)
@@ -100,11 +100,11 @@ async def create_endpoint(
         )
     except management.UnknownEventTypes as e:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             {"message": str(e), "unknown_event_types": e.names},
         )
     except management.InvalidEndpointURL as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e))
     return EndpointCreatedOut(
         id=endpoint.id, url=endpoint.url, status=endpoint.status,
         event_types=body.event_types, secret=secret,

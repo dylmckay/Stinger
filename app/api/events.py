@@ -41,7 +41,7 @@ async def publish(
         )
     except UnknownEventType:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"unknown event type: {body.event_type!r}",
         )
     if result.idempotent_replay:
