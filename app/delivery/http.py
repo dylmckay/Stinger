@@ -20,6 +20,7 @@ from app.delivery.ssrf import SSRFError, resolve_and_validate
 DEFAULT_TIMEOUT = httpx.Timeout(connect=3.0, read=10.0, write=10.0, pool=5.0)
 OVERALL_DEADLINE_S = 15.0                    # hard wall-clock cap < lease (30s)
 NON_RETRYABLE_STATUSES = frozenset({410})    # 410 Gone: consumer says stop
+MAX_RESPONSE_WIRE_BYTES = 65536   # wire-read ceiling; comfortably > MAX_RESPONSE_BODY bytes
 
 
 async def attempt_delivery(
@@ -50,7 +51,8 @@ async def attempt_delivery(
         "content-type": "application/json",
         "user-agent": "Stinger/0.1",
         "webhook-id": message_id,
-        "host": target.host_header,          # preserve vhost despite pinning
+        "host": target.host_header,
+        "accept-encoding": "identity",       # no compression → raw == decoded, no bomb path
     }
     if extra_headers:
         headers.update(extra_headers)
@@ -62,10 +64,21 @@ async def attempt_delivery(
         extensions={"sni_hostname": target.host},
     )
 
-    # 2. Execute under a hard overall deadline.
+    # 2. Execute under a hard overall deadline, streaming so a malicious receiver
+    #    can't make us buffer an unbounded body. We cap bytes pulled off the wire,
+    #    not just stored text: the deadline still kills a slow drip that never
+    #    reaches the cap, so the body is now bounded in BOTH size and time.
     try:
         async with asyncio.timeout(OVERALL_DEADLINE_S):
-            resp = await client.send(request, follow_redirects=False)
+            resp = await client.send(request, follow_redirects=False, stream=True)
+            try:
+                buf = bytearray()
+                async for chunk in resp.aiter_raw():
+                    buf += chunk
+                    if len(buf) >= MAX_RESPONSE_WIRE_BYTES:
+                        break
+            finally:
+                await resp.aclose()
     except (httpx.TimeoutException, TimeoutError):
         return AttemptResult(False, retryable=True, error="timeout", latency_ms=elapsed_ms())
     except httpx.HTTPError as e:
@@ -74,7 +87,7 @@ async def attempt_delivery(
             error=f"{type(e).__name__}: {e}", latency_ms=elapsed_ms(),
         )
 
-    body = resp.text[:MAX_RESPONSE_BODY]
+    body = bytes(buf).decode("utf-8", "replace")[:MAX_RESPONSE_BODY]
     latency = elapsed_ms()
 
     # 3. Classify.
