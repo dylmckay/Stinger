@@ -27,6 +27,9 @@ from app.delivery.record import discard_delivery, record_attempt
 from app.models import Delivery, Endpoint, Event, EndpointStatus
 from app.crypto import get_secret_box
 
+LISTENER_BACKOFF_INITIAL = 1.0
+LISTENER_BACKOFF_MAX = 30.0
+
 log = logging.getLogger("stinger.worker")
 box = get_secret_box()
 
@@ -141,18 +144,57 @@ class Worker:
             await asyncio.gather(*self._inflight, return_exceptions=True)
 
 
-async def listen_for_notifications(dsn: str, channel: str, worker: Worker, stop: asyncio.Event) -> None:
-    """Hold a dedicated raw asyncpg connection LISTENing for wake pings.
+async def _sleep_unless_stopped(stop: asyncio.Event, seconds: float) -> None:
+    """Sleep up to `seconds`, returning early if `stop` is set."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        pass
 
-    Must be a connection OUTSIDE the SQLAlchemy pool — a pooled connection
-    would eventually be recycled and silently drop the LISTEN. `dsn` is the
-    raw libpq URL (postgresql://...), not the +asyncpg SQLAlchemy form.
+
+async def listen_for_notifications(dsn: str, channel: str, worker: Worker, stop: asyncio.Event) -> None:
+    """Hold a dedicated raw asyncpg connection LISTENing for wake pings, and keep
+    it alive across connection loss.
+
+    Polling is the correctness floor, so a dropped LISTEN only costs latency — but
+    a platform that silently loses its low-latency path on the first DB blip isn't
+    production-grade. This reconnects with capped exponential backoff and, on every
+    (re)connect, wakes the worker once: NOTIFYs are lossy, so any that fired while
+    we were disconnected were missed and a poll must sweep up the gap.
+
+    Must be a connection OUTSIDE the SQLAlchemy pool — a pooled connection would
+    eventually be recycled and silently drop the LISTEN. `dsn` is the raw libpq
+    URL (postgresql://...), not the +asyncpg SQLAlchemy form.
     """
     import asyncpg
 
-    conn = await asyncpg.connect(dsn)
-    try:
-        await conn.add_listener(channel, lambda *_: worker.wake())
-        await stop.wait()
-    finally:
-        await conn.close()
+    backoff = LISTENER_BACKOFF_INITIAL
+    while not stop.is_set():
+        try:
+            conn = await asyncpg.connect(dsn)
+        except (OSError, asyncpg.PostgresError) as e:
+            log.warning("listener connect failed (%r); retrying in %.1fs", e, backoff)
+            await _sleep_unless_stopped(stop, backoff)
+            backoff = min(backoff * 2, LISTENER_BACKOFF_MAX)
+            continue
+
+        backoff = LISTENER_BACKOFF_INITIAL          # reset after a healthy connect
+        lost = asyncio.Event()
+        conn.add_termination_listener(lambda _con: lost.set())
+        try:
+            await conn.add_listener(channel, lambda *_: worker.wake())
+            worker.wake()                           # sweep up anything NOTIFY'd while we were down
+            stop_task = asyncio.create_task(stop.wait())
+            lost_task = asyncio.create_task(lost.wait())
+            done, pending = await asyncio.wait(
+                {stop_task, lost_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+            if lost_task in done and not stop.is_set():
+                log.warning("listener connection lost; reconnecting")
+        except (OSError, asyncpg.PostgresError) as e:
+            log.warning("listener error (%r); reconnecting", e)
+        finally:
+            await conn.close()
+    log.info("listener stopped")
