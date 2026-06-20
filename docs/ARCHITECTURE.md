@@ -221,6 +221,39 @@ than you can finish before the lease expires. A task finishing wakes the loop to
 refill promptly. On `SIGTERM` the loop stops claiming and drains in-flight
 deliveries; anything not finished is covered by lease expiry.
 
+### Per-endpoint concurrency cap
+
+A global concurrency bound alone isn't enough for fairness: one slow endpoint
+whose deliveries each hang for the full timeout can occupy every slot in the
+pool, starving every other endpoint behind it. So each endpoint also has its own
+in-flight cap — `endpoints.max_concurrent_deliveries`, defaulting to a global
+value (10) when `NULL` — and no endpoint may exceed it regardless of how much of
+its backlog is due.
+
+The cap is enforced **in the claim query, not in worker memory**, so it holds
+across every worker process rather than per-process. The key is that it needs no
+new bookkeeping: "in flight for this endpoint" is exactly `COUNT(*) WHERE
+locked_by IS NOT NULL GROUP BY endpoint_id`, the same `locked_by IS NOT NULL ⇔
+in flight` invariant the lease already maintains. The claim CTE counts current
+leases per endpoint, ranks the due candidates per endpoint with a window
+function, and admits a row only while `rank + current_in_flight ≤ cap`. (Window
+functions can't coexist with `FOR UPDATE` at one query level in Postgres, so the
+`SKIP LOCKED` candidate lock and the ranking live at separate CTE levels, and the
+in-flight count is a separate aggregate read — locking the already-leased rows
+would make `SKIP LOCKED` undercount them.)
+
+Two consequences worth stating. First, head-of-line fairness: if the query only
+locked `limit` candidates and a saturated endpoint's rows sorted to the front,
+those rows would fill the candidate set and crowd out admissible work for other
+endpoints. The claim over-fetches a larger candidate window than it intends to
+claim so the cap filter has alternatives to admit — a mitigation, not a
+guarantee against a pathological flood. Second, this gives **rough per-endpoint
+FIFO ordering** as a side effect, since the per-endpoint rank is ordered by
+`(next_attempt_at, id)`. A crashed worker's lease counts toward its endpoint's
+in-flight total until the lease expires (~30s), conservatively under-filling that
+endpoint for one lease window — it self-heals via the same expiry that recovers
+the delivery itself.
+
 ### Circuit breaker
 
 A permanently-dead endpoint shouldn't burn the full retry schedule on every
@@ -433,8 +466,10 @@ Creating endpoints and event types is exposed three ways — the admin CLI, an
 authenticated JSON API (`/api/v1/endpoints`, `/api/v1/event-types`), and
 dashboard forms — but the creation rules live in **exactly one place**, a
 `management` core that all three call. Event-type resolution, the http/https URL
-validation, signing-secret generation and sealing, and subscription wiring are
-written once; the surfaces only translate transport and errors (a duplicate
+validation, the optional per-endpoint concurrency cap (validated `≥ 1`,
+mirroring the `max_concurrent_positive` CHECK), signing-secret generation and
+sealing, and subscription wiring are written once; the surfaces only translate
+transport and errors (a duplicate
 becomes a `409` on the API, an inline form error on the dashboard, a non-zero
 CLI exit). The alternative — re-deriving "create an endpoint" in each entry
 point — is how three subtly different behaviours drift into existence; a created
@@ -554,9 +589,8 @@ Honest scope boundaries, listed so their absence reads as a decision:
 - **Time-window disable trigger.** The breaker counts *consecutive failures*,
   which couples the trip to traffic volume; a sustained-time-window trigger
   ("failing continuously for >1h") is more volume-robust but needs extra state.
-- **Per-endpoint concurrency cap.** Global concurrency is bounded; a per-endpoint
-  cap (to stop one slow consumer monopolizing the pool and to give rough
-  per-endpoint ordering) is a refinement.
+- **Editing an endpoint's cap after creation.** `max_concurrent_deliveries` is
+  set at creation only; there is no update endpoint yet to retune it in place.
 - **Payload transformations, fan-in/aggregation, and per-endpoint rate limiting**
   are out of scope by design.
 

@@ -34,6 +34,9 @@ and get a working platform backed by a single database.
 - **Circuit breaker with auto-recovery** — endpoints that fail consistently are
   auto-disabled, then automatically probed with a single trial delivery after a
   cooldown and re-enabled on success; manual re-enable + replay is still there.
+- **Per-endpoint concurrency cap** — a slow consumer can't monopolize the worker
+  pool; each endpoint has an in-flight cap (default global, overridable per
+  endpoint), enforced in the claim query so it holds across all workers.
 - **SSRF protection** — every delivery target is resolved and validated against
   private / loopback / metadata IP ranges, with the connection pinned to the
   vetted IP to close DNS-rebinding races.
@@ -146,18 +149,22 @@ curl -X POST http://localhost:8000/api/v1/event-types \
 
 # Add an endpoint subscribed to one or more event types.
 # The response includes the signing secret ONCE — store it now.
+# max_concurrent_deliveries is optional — omit it to use the global default.
 curl -X POST http://localhost:8000/api/v1/endpoints \
   -H "Authorization: Bearer sk_…" -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com/webhooks", "event_types": ["invoice.paid"]}'
+  -d '{"url": "https://example.com/webhooks", "event_types": ["invoice.paid"], "max_concurrent_deliveries": 5}'
 
 # List them
 curl http://localhost:8000/api/v1/event-types -H "Authorization: Bearer sk_…"
 curl http://localhost:8000/api/v1/endpoints   -H "Authorization: Bearer sk_…"
 ```
 
+The bootstrap CLI takes the same cap via `--max-concurrent` on `add-endpoint`.
+
 On the dashboard, the **Endpoints** page has a create form (with a quick-add for
-event types), and the **Event types** page manages the full set. Created
-endpoints show their signing secret once, in the same reveal used by rotation.
+event types and an optional max-concurrent field), and the **Event types** page
+manages the full set. Created endpoints show their signing secret once, in the
+same reveal used by rotation.
 
 ## Receiving & verifying
 
@@ -202,16 +209,16 @@ uv run python -m app.worker_main        # delivery worker
 ## Project status
 
 v0.2.0. Built and tested: the delivery engine (fan-out, lease-based claim,
-retries, crash recovery), HMAC signing with rotation, signing secrets encrypted
-at rest, SSRF protection, the circuit breaker with half-open auto-recovery,
-`Retry-After` honoring, a self-healing `LISTEN/NOTIFY` listener, idempotent
-publish, replay, a management API and dashboard forms for endpoints and event
-types, CSRF token protection on all dashboard forms, and the dashboard with its
-per-delivery attempt timeline.
+retries, crash recovery), a per-endpoint concurrency cap, HMAC signing with
+rotation, signing secrets encrypted at rest, SSRF protection, the circuit breaker
+with half-open auto-recovery, `Retry-After` honoring, a self-healing
+`LISTEN/NOTIFY` listener, idempotent publish, replay, a management API and
+dashboard forms for endpoints and event types, CSRF token protection on all
+dashboard forms, and the dashboard with its per-delivery attempt timeline.
 
 Known limitations and deferred work are tracked honestly in the
 [architecture doc](docs/ARCHITECTURE.md#deferred--known-limitations) — including
-a sustained-time-window breaker trigger and a per-endpoint concurrency cap.
+a sustained-time-window breaker trigger and in-place editing of an endpoint's cap.
 
 ## License
 
