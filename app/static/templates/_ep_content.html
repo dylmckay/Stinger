@@ -4,6 +4,7 @@
 <div id="ep-content">
   <section class="creator">
     <form class="ep-form" hx-post="/dashboard/endpoints" hx-target="#ep-content" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <div class="field">
         <label for="ep-url">New endpoint URL</label>
         <input id="ep-url" name="url" type="url" inputmode="url"
@@ -31,6 +32,7 @@
     </form>
 
     <form class="quick-add" hx-post="/dashboard/endpoints/event-types" hx-target="#ep-content" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <div class="field">
         <label for="qa-name">Quick-add event type</label>
         <div class="inline-row">

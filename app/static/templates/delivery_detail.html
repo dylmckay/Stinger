@@ -16,6 +16,7 @@
         <pre>{{ d.event.payload }}</pre>
       </div>
       <form hx-post="/dashboard/deliveries/{{ d.delivery.id }}/replay">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
         <button class="btn-primary" type="submit">Replay delivery</button>
       </form>
     </section>

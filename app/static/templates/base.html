@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token(request) }}"}'>
+
   <header class="topbar">
     <a class="brand" href="/dashboard/deliveries"><span class="brand-mark">⬡</span> stinger</a>
     <nav class="nav">

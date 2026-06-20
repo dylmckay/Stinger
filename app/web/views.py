@@ -14,7 +14,7 @@ from starlette.responses import Response
 from app import reads
 from app.delivery.record import reenable_endpoint, rotate_endpoint_secret
 from app.models import Application, Delivery, Endpoint, EndpointEventType, Event, EventType
-from app.web.deps import current_application_web, get_session, is_htmx
+from app.web.deps import current_application_web, get_session, is_htmx, verify_csrf
 from app import management
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -131,6 +131,7 @@ async def replay(
     delivery_id: UUID,
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
 ):
     new_id = await reads.replay_delivery(
         session, application_id=application.id, delivery_id=delivery_id
@@ -213,6 +214,7 @@ async def reenable_ep(
     endpoint_id: UUID,
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
 ):
     ok = await reenable_endpoint(
         session, application_id=application.id, endpoint_id=endpoint_id
@@ -231,6 +233,7 @@ async def rotate_ep(
     endpoint_id: UUID,
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
 ):
     new_secret = await rotate_endpoint_secret(
         session, application_id=application.id, endpoint_id=endpoint_id
@@ -250,6 +253,7 @@ async def create_endpoint_web(
     event_types: list[str] | None = Form(None),
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
 ):
     event_types = event_types or []
     templates = request.app.state.templates
@@ -280,6 +284,7 @@ async def quick_add_event_type_web(
     name: str = Form(""),
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
 ):
     """Quick-add an event type from the endpoints page; re-renders the region so
     the new type immediately appears as a checkbox in the create form."""
@@ -315,6 +320,7 @@ async def create_event_type_web(
     name: str = Form(""),
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
 ):
     error = None
     try:

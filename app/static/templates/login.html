@@ -12,6 +12,7 @@
       <div class="brand"><span class="brand-mark">⬡</span> stinger</div>
       <p class="tag">Paste an application API key to view its deliveries.</p>
       <form method="post" action="/login">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
         <div class="field">
           <label for="api_key">API key</label>
           <input id="api_key" name="api_key" type="password" autocomplete="off"

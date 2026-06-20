@@ -48,6 +48,8 @@ def create_web_app(session_factory: async_sessionmaker[AsyncSession], *, secret_
 
     templates = Jinja2Templates(directory=Path(__file__).resolve().parents[1] / "static" / "templates")
     templates.env.filters["age"] = _humanize_age
+    from app.web.deps import csrf_token as _csrf_token
+    templates.env.globals["csrf_token"] = _csrf_token
     app.state.templates = templates
     app.state.session_factory = session_factory
 

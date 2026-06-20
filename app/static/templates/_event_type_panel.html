@@ -3,6 +3,7 @@
    an error with the entered name preserved) in one round trip. #}
 <div id="et-panel">
   <form class="inline-form" hx-post="/dashboard/event-types" hx-target="#et-panel" hx-swap="outerHTML">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <div class="field">
       <label for="et-name">New event type</label>
       <div class="inline-row">
