@@ -67,14 +67,15 @@ async def test_worker_delivers_signs_and_records(session_factory, receiver):
     async with httpx.AsyncClient() as client:
         worker = Worker(session_factory, client, max_concurrency=20, poll_interval=0.2, allow_private=True)
         run_task = asyncio.create_task(worker.run())
+        # Wait until all deliveries have been attempted (recorded in DeliveryAttempt).
+        # This is more reliable than checking due==0, which only means deliveries
+        # have been claimed, not that they've been dispatched and processed.
         for _ in range(50):
             await asyncio.sleep(0.1)
             async with session_factory() as s:
-                due = await s.scalar(
-                    select(func.count()).select_from(Delivery).where(
-                        Delivery.status.in_(("pending", "retrying")),
-                        Delivery.next_attempt_at <= func.now()))
-            if due == 0:
+                attempted = await s.scalar(
+                    select(func.count()).select_from(DeliveryAttempt))
+            if attempted == n_ok + n_fail:
                 break
         worker.stop()
         await run_task
