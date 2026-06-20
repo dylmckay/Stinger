@@ -12,6 +12,11 @@
                value="{{ form_url or '' }}" autocomplete="off" spellcheck="false">
       </div>
       <div class="field">
+        <label for="ep-max-concurrent">Max concurrent deliveries <span class="muted">(optional)</span></label>
+        <input id="ep-max-concurrent" name="max_concurrent" type="number" min="1" inputmode="numeric"
+               placeholder="default" value="{{ form_max_concurrent or '' }}">
+      </div>
+      <div class="field">
         <label>Subscribe to event types</label>
         {% if event_types %}
           <div class="check-grid">

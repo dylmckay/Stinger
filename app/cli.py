@@ -59,11 +59,12 @@ async def cmd_add_event_type(session, *, application_id: uuid.UUID, name: str) -
 
 
 async def cmd_add_endpoint(
-    session, *, application_id: uuid.UUID, url: str, event_types: list[str]
+    session, *, application_id: uuid.UUID, url: str, event_types: list[str], max_concurrent: int | None = None,
 ) -> str:
     try:
         endpoint, secret = await management.create_endpoint(
             session, application_id=application_id, url=url, event_type_names=event_types,
+            max_concurrent=max_concurrent,
         )
     except management.ManagementError as e:
         raise CLIError(str(e))
@@ -99,6 +100,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("url")
     p.add_argument("--event-type", action="append", dest="event_types", metavar="NAME",
                    required=True, help="event type to subscribe to (repeatable)")
+    p.add_argument("--max-concurrent", type=int, default=None, metavar="N",
+                   help="max deliveries in flight at once for this endpoint (default: global)")
 
     p = sub.add_parser("issue-key", help="mint an API key for an application")
     p.add_argument("application_id")
@@ -126,6 +129,7 @@ async def _dispatch(args: argparse.Namespace) -> str:
                     application_id=_parse_uuid("application_id", args.application_id),
                     url=args.url,
                     event_types=args.event_types,
+                    max_concurrent=args.max_concurrent,
                 )
             if args.command == "issue-key":
                 return await cmd_issue_key(

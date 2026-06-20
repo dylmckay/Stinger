@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.delivery import signing
-from app.delivery.claim import claim_deliveries
+from app.delivery.claim import DEFAULT_MAX_CONCURRENT_PER_ENDPOINT, claim_deliveries
 from app.delivery.http import attempt_delivery
 from app.delivery.record import DEFAULT_BREAKER_COOLDOWN, discard_delivery, promote_half_open_endpoints, record_attempt
 from app.models import Delivery, Endpoint, Event, EndpointStatus
@@ -42,6 +42,7 @@ class Worker:
         client: httpx.AsyncClient,
         *,
         max_concurrency: int = 50,
+        endpoint_max_concurrency: int = DEFAULT_MAX_CONCURRENT_PER_ENDPOINT,
         poll_interval: float = 2.0,
         lease_seconds: int = 30,
         allow_private: bool = False,
@@ -51,6 +52,7 @@ class Worker:
         self._sf = session_factory
         self._client = client
         self._max = max_concurrency
+        self._endpoint_max = endpoint_max_concurrency
         self._poll = poll_interval
         self._lease = lease_seconds
         self._allow_private = allow_private
@@ -80,6 +82,7 @@ class Worker:
                     claimed = await claim_deliveries(
                         session, worker_id=self.worker_id,
                         limit=free, lease_seconds=self._lease,
+                        global_endpoint_cap=self._endpoint_max,
                     )
                 if claimed:
                     await self._dispatch(claimed)

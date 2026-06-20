@@ -69,6 +69,10 @@ class Endpoint(TimestampMixin, Base):
             f"status IN ('{EndpointStatus.ENABLED}', '{EndpointStatus.DISABLED}', '{EndpointStatus.HALF_OPEN}')",
             name="status_valid",
         ),
+        CheckConstraint(
+            "max_concurrent_deliveries IS NULL OR max_concurrent_deliveries > 0",
+            name="max_concurrent_positive",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=_uuid7)
@@ -80,6 +84,7 @@ class Endpoint(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default=EndpointStatus.ENABLED)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     disabled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    max_concurrent_deliveries: Mapped[int | None] = mapped_column(Integer, nullable=True)   # NULL = use the worker's global default. Enforced at claim time so it holds across worker processes.
 
 
 class EndpointEventType(Base):
@@ -112,6 +117,13 @@ class Delivery(TimestampMixin, Base):
             "next_attempt_at",
             "id",
             postgresql_where="status IN ('pending', 'retrying')",
+        ),
+        # Serves the per-endpoint in-flight count in claim_deliveries. Covers only
+        # leased rows, which are bounded by worker concurrency, so it stays tiny.
+        Index(
+            "ix_deliveries_inflight",
+            "endpoint_id",
+            postgresql_where="locked_by IS NOT NULL",
         ),
     )
 

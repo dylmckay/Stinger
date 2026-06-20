@@ -68,6 +68,7 @@ async def list_event_types(
 class EndpointIn(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     event_types: list[str] = Field(min_length=1)
+    max_concurrent_deliveries: int | None = Field(default=None, ge=1)
 
 
 class EndpointOut(BaseModel):
@@ -75,6 +76,7 @@ class EndpointOut(BaseModel):
     url: str
     status: str
     event_types: list[str]
+    max_concurrent_deliveries: int | None = None
 
 
 class EndpointCreatedOut(EndpointOut):
@@ -97,17 +99,19 @@ async def create_endpoint(
             application_id=application.id,
             url=body.url,
             event_type_names=body.event_types,
+            max_concurrent=body.max_concurrent_deliveries,
         )
     except management.UnknownEventTypes as e:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             {"message": str(e), "unknown_event_types": e.names},
         )
-    except management.InvalidEndpointURL as e:
+    except (management.InvalidEndpointURL, management.InvalidEndpointConfig) as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e))
     return EndpointCreatedOut(
         id=endpoint.id, url=endpoint.url, status=endpoint.status,
         event_types=body.event_types, secret=secret,
+        max_concurrent_deliveries=endpoint.max_concurrent_deliveries,
     )
 
 
@@ -119,7 +123,10 @@ async def list_endpoints(
     pairs = await reads.list_endpoints(session, application_id=application.id)
     return EndpointListOut(
         items=[
-            EndpointOut(id=ep.id, url=ep.url, status=ep.status, event_types=types)
+            EndpointOut(
+                id=ep.id, url=ep.url, status=ep.status, event_types=types,
+                max_concurrent_deliveries=ep.max_concurrent_deliveries,
+            )
             for ep, types in pairs
         ]
     )

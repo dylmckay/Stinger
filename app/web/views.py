@@ -147,7 +147,7 @@ async def replay(
 async def _endpoints_content_ctx(
     session, application_id, *,
     revealed_id=None, revealed_secret=None,
-    error=None, form_url="", selected=(),
+    error=None, form_url="", selected=(), form_max_concurrent="",
     et_error=None, et_name="",
 ) -> dict:
     """Context for _ep_content.html. On a successful create, pass the new
@@ -162,6 +162,7 @@ async def _endpoints_content_ctx(
         "cards": cards,
         "event_types": event_types,
         "error": error, "form_url": form_url, "selected": list(selected),
+        "form_max_concurrent": form_max_concurrent,
         "et_error": et_error, "et_name": et_name,
     }
 
@@ -251,25 +252,40 @@ async def create_endpoint_web(
     request: Request,
     url: str = Form(""),
     event_types: list[str] | None = Form(None),
+    max_concurrent: str = Form(""),
     application: Application = Depends(current_application_web),
     session: AsyncSession = Depends(get_session),
     _csrf: None = Depends(verify_csrf),
 ):
     event_types = event_types or []
     templates = request.app.state.templates
+    cap = max_concurrent.strip()
     if not event_types:
         ctx = await _endpoints_content_ctx(
             session, application.id,
             error="Select at least one event type.", form_url=url, selected=event_types,
+            form_max_concurrent=cap,
+        )
+        return templates.TemplateResponse(request, "_ep_content.html", ctx)
+    # Blank field means "use the global default"; anything else must be a number.
+    try:
+        max_concurrent_val = int(cap) if cap else None
+    except ValueError:
+        ctx = await _endpoints_content_ctx(
+            session, application.id,
+            error="Max concurrent deliveries must be a whole number.",
+            form_url=url, selected=event_types, form_max_concurrent=cap,
         )
         return templates.TemplateResponse(request, "_ep_content.html", ctx)
     try:
         endpoint, secret = await management.create_endpoint(
             session, application_id=application.id, url=url, event_type_names=event_types,
+            max_concurrent=max_concurrent_val,
         )
     except management.ManagementError as e:
         ctx = await _endpoints_content_ctx(
             session, application.id, error=str(e), form_url=url, selected=event_types,
+            form_max_concurrent=cap,
         )
         return templates.TemplateResponse(request, "_ep_content.html", ctx)
     ctx = await _endpoints_content_ctx(

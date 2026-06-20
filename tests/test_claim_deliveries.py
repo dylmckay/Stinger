@@ -39,9 +39,13 @@ async def test_concurrent_claims_are_disjoint_and_complete(session_factory):
     sink: list = []
 
     async def drain(worker_id: str):
+        # All rows are on one endpoint; lift the per-endpoint cap so this test
+        # exercises only cross-worker disjointness (the cap has its own suite).
         async with session_factory() as s:  # each worker gets its own session
             while True:
-                rows = await claim_deliveries(s, worker_id=worker_id, limit=BATCH)
+                rows = await claim_deliveries(
+                    s, worker_id=worker_id, limit=BATCH, global_endpoint_cap=N_DUE
+                )
                 if not rows:
                     return
                 sink.extend(d.id for d in rows)

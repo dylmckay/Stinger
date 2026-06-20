@@ -54,6 +54,10 @@ class InvalidEndpointURL(ManagementError):
     pass
 
 
+class InvalidEndpointConfig(ManagementError):
+    pass
+
+
 class InvalidEventTypeName(ManagementError):
     pass
 
@@ -85,6 +89,16 @@ def validate_endpoint_url(url: str) -> str:
     return url
 
 
+def validate_max_concurrent(value: int | None) -> int | None:
+    """None means 'use the global default'; any explicit value must be positive
+    (mirrors the max_concurrent_positive CHECK constraint)."""
+    if value is None:
+        return None
+    if value < 1:
+        raise InvalidEndpointConfig("max concurrent deliveries must be at least 1")
+    return value
+
+
 async def _require_application(session: AsyncSession, application_id: uuid.UUID) -> Application:
     application = await session.get(Application, application_id)
     if application is None:
@@ -113,14 +127,19 @@ async def create_endpoint(
     application_id: uuid.UUID,
     url: str,
     event_type_names: list[str],
+    max_concurrent: int | None = None,
 ) -> tuple[Endpoint, str]:
     """Create an endpoint, subscribe it to the named event types, and return
     (endpoint, plaintext_secret). The plaintext secret is shown ONCE — only its
     sealed form is persisted. Raises before creating anything if any event type
     is unknown for this application.
+
+    `max_concurrent` caps how many deliveries this endpoint may have in flight at
+    once; None means use the worker's global default.
     """
     await _require_application(session, application_id)
     url = validate_endpoint_url(url)
+    max_concurrent = validate_max_concurrent(max_concurrent)
 
     # Resolve every requested type up front (tenant-scoped), so a typo fails
     # cleanly before we create the endpoint or its subscriptions.
@@ -143,6 +162,7 @@ async def create_endpoint(
         application_id=application_id,
         url=url,
         secret=get_secret_box().seal(plaintext),   # sealed at rest; plaintext returned once
+        max_concurrent_deliveries=max_concurrent,
     )
     session.add(endpoint)
     await session.flush()
