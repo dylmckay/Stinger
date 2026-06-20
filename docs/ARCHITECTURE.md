@@ -484,6 +484,32 @@ would need a key to authenticate, a chicken-and-egg — so the first key is mint
 out-of-band via an admin CLI; user-facing key management comes later via the
 authenticated dashboard.
 
+### CSRF protection on dashboard forms
+
+All dashboard `POST` routes carry a per-session CSRF token in addition to the
+signed session cookie. `SameSite=lax` blocks cross-site form submissions in most
+browser contexts, but `lax` applies only to top-level navigations and is not
+sufficient for HTMX's `hx-post` button attributes, which do not qualify. A
+dedicated token closes that gap.
+
+The token is a `secrets.token_urlsafe(32)` value stored lazily in the session on
+first access and injected into every template via a Jinja2 global. Validation
+checks two paths to cover the two request shapes the dashboard uses:
+
+- **`X-CSRF-Token` header** — `hx-headers` on `<body>` makes HTMX attach the
+  token to every mutating request automatically, covering both form submissions
+  and bare `hx-post` button actions (re-enable, rotate-secret).
+- **`csrf_token` hidden input** — present in every `<form>` for the non-HTMX
+  login form and as defense-in-depth on HTMX forms.
+
+The `verify_csrf` FastAPI dependency checks the header first; if absent, it reads
+the form body via Starlette's cached `request.form()`. `hmac.compare_digest`
+(stdlib) guards the comparison — no new package dependency.
+
+The token lives inside the existing signed session cookie (Starlette
+`SessionMiddleware`), so there is no separate CSRF cookie and no new state. It is
+cleared on logout with the rest of the session.
+
 ---
 
 ## Read side
@@ -531,9 +557,6 @@ Honest scope boundaries, listed so their absence reads as a decision:
 - **Per-endpoint concurrency cap.** Global concurrency is bounded; a per-endpoint
   cap (to stop one slow consumer monopolizing the pool and to give rough
   per-endpoint ordering) is a refinement.
-- **CSRF tokens on dashboard forms.** The dashboard's state-changing POSTs rely
-  on `SameSite` session cookies; a dedicated CSRF-token pass is a hardening
-  follow-up, not yet done.
 - **Payload transformations, fan-in/aggregation, and per-endpoint rate limiting**
   are out of scope by design.
 

@@ -12,9 +12,9 @@ and get a working platform backed by a single database.
 
 > **Status: v0.2.0.** The delivery engine, signing, SSRF protection, circuit
 > breaker (with half-open auto-recovery), secret rotation, encryption of signing
-> secrets at rest, a management API + dashboard forms, and `Retry-After` honoring
-> are built and tested against real Postgres. See [Project status](#project-status)
-> for what's deferred.
+> secrets at rest, a management API + dashboard forms, CSRF protection on
+> dashboard forms, and `Retry-After` honoring are built and tested against real
+> Postgres. See [Project status](#project-status) for what's deferred.
 
 ---
 
@@ -206,12 +206,12 @@ retries, crash recovery), HMAC signing with rotation, signing secrets encrypted
 at rest, SSRF protection, the circuit breaker with half-open auto-recovery,
 `Retry-After` honoring, a self-healing `LISTEN/NOTIFY` listener, idempotent
 publish, replay, a management API and dashboard forms for endpoints and event
-types, and the dashboard with its per-delivery attempt timeline.
+types, CSRF token protection on all dashboard forms, and the dashboard with its
+per-delivery attempt timeline.
 
 Known limitations and deferred work are tracked honestly in the
 [architecture doc](docs/ARCHITECTURE.md#deferred--known-limitations) — including
-a sustained-time-window breaker trigger, a per-endpoint concurrency cap, and
-CSRF tokens on the dashboard's forms.
+a sustained-time-window breaker trigger and a per-endpoint concurrency cap.
 
 ## License
 

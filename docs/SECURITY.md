@@ -106,6 +106,24 @@ reachable only through their event's application id, so one tenant cannot read
 another's data. A weak or leaked `SECRET_KEY` permits session forgery, so it must
 be set to a strong, unique value.
 
+### CSRF protection
+
+All state-changing `POST` requests on the dashboard require a CSRF token that
+must match a per-session value stored inside the signed session cookie. Two
+delivery paths are supported:
+
+- **`X-CSRF-Token` request header** — used by all HTMX requests. The token is
+  injected via `hx-headers` on `<body>`, so it is sent automatically by every
+  `hx-post` element, including bare button actions that do not wrap a `<form>`.
+- **`csrf_token` hidden form field** — present in every `<form>` element,
+  required by the non-HTMX login form and provides defense-in-depth for HTMX
+  form submissions.
+
+The token is a 256-bit random value (`secrets.token_urlsafe(32)`) generated on
+first page load and stored inside the existing Starlette session. It is cleared
+on logout. The comparison uses `hmac.compare_digest` to prevent timing-based
+token inference.
+
 ## Known limitations
 
 Stated plainly. Their absence is a known boundary, not an oversight.
