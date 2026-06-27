@@ -79,7 +79,7 @@ Requires Docker and Docker Compose.
 ```bash
 git clone https://github.com/dylmckay/stinger.git
 cd stinger
-cp .env.example .env          # a SECRET_KEY is pre-generated; regenerate for production
+cp .env.example .env          # generate secure SECRET_KEY for production: `python -c "import secrets; print(secrets.token_urlsafe(48))"`
 docker compose up -d --build  # starts postgres, runs migrations, then api + worker
 ```
 
