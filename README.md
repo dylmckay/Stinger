@@ -1,3 +1,5 @@
+[![CI](https://github.com/dylmckay/Stinger/actions/workflows/ci.yml/badge.svg)](https://github.com/dylmckay/Stinger/actions/workflows/ci.yml)
+
 # Stinger 🐝
 
 A self-hostable webhook delivery platform. Publish events to it, and it
