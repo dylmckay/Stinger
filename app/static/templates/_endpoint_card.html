@@ -26,6 +26,15 @@
     </div>
   {% endif %}
 
+  <form class="inline-edit" hx-post="/dashboard/endpoints/{{ card.ep.id }}/max-concurrent"
+        hx-target="#ep-{{ card.ep.id }}" hx-swap="outerHTML">
+    <label for="cap-{{ card.ep.id }}">Max concurrent <span class="muted">(blank = default)</span></label>
+    <input id="cap-{{ card.ep.id }}" name="max_concurrent" type="number" min="1" inputmode="numeric"
+           placeholder="default" value="{{ card.ep.max_concurrent_deliveries or '' }}">
+    <button class="btn-secondary" type="submit">Save</button>
+  </form>
+  {% if edit_error %}<div class="warn">{{ edit_error }}</div>{% endif %}
+
   <div class="card-actions">
     {% if card.ep.status == 'disabled' %}
       <button class="btn-secondary" hx-post="/dashboard/endpoints/{{ card.ep.id }}/reenable"

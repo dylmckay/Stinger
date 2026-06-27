@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -170,3 +170,26 @@ async def create_endpoint(
         session.add(EndpointEventType(endpoint_id=endpoint.id, event_type_id=event_type.id))
     await session.commit()
     return endpoint, plaintext
+
+
+async def set_endpoint_max_concurrent(
+    session: AsyncSession,
+    *,
+    application_id: uuid.UUID,
+    endpoint_id: uuid.UUID,
+    max_concurrent: int | None,
+) -> bool:
+    """Retune an endpoint's concurrency cap in place. None resets to the worker's
+    global default. Returns False if the endpoint isn't found for this application
+    (tenant-scoped). The worker reads the cap live at claim time, so a change
+    takes effect on the next poll without a restart.
+    """
+    max_concurrent = validate_max_concurrent(max_concurrent)
+    found = (await session.execute(
+        update(Endpoint)
+        .where(Endpoint.id == endpoint_id, Endpoint.application_id == application_id)
+        .values(max_concurrent_deliveries=max_concurrent)
+        .returning(Endpoint.id)
+    )).first()
+    await session.commit()
+    return found is not None

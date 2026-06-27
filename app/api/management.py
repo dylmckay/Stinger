@@ -79,6 +79,10 @@ class EndpointOut(BaseModel):
     max_concurrent_deliveries: int | None = None
 
 
+class EndpointUpdateIn(BaseModel):
+    max_concurrent_deliveries: int | None = Field(default=None, ge=1)
+
+
 class EndpointCreatedOut(EndpointOut):
     secret: str    # shown ONCE; only the sealed form is persisted
 
@@ -112,6 +116,33 @@ async def create_endpoint(
         id=endpoint.id, url=endpoint.url, status=endpoint.status,
         event_types=body.event_types, secret=secret,
         max_concurrent_deliveries=endpoint.max_concurrent_deliveries,
+    )
+
+
+@router.patch("/endpoints/{endpoint_id}", response_model=EndpointOut)
+async def update_endpoint(
+    endpoint_id: UUID,
+    body: EndpointUpdateIn,
+    application: Application = Depends(current_application),
+    session: AsyncSession = Depends(get_session),
+):
+    """Retune an endpoint's concurrency cap in place. `null` resets it to the
+    worker's global default. Takes effect on the next claim, no restart needed."""
+    try:
+        ok = await management.set_endpoint_max_concurrent(
+            session, application_id=application.id, endpoint_id=endpoint_id,
+            max_concurrent=body.max_concurrent_deliveries,
+        )
+    except management.InvalidEndpointConfig as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e))
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "endpoint not found")
+    ep, types = await reads.get_endpoint(
+        session, application_id=application.id, endpoint_id=endpoint_id
+    )
+    return EndpointOut(
+        id=ep.id, url=ep.url, status=ep.status, event_types=types,
+        max_concurrent_deliveries=ep.max_concurrent_deliveries,
     )
 
 

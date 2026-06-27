@@ -9,6 +9,7 @@ import collections
 
 import pytest
 
+from app import management
 from app.delivery.claim import DEFAULT_MAX_CONCURRENT_PER_ENDPOINT, claim_deliveries
 from app.delivery.record import AttemptResult, record_attempt
 from app.models import Application, Delivery, DeliveryStatus, Endpoint, Event, EventType
@@ -153,6 +154,32 @@ async def test_fifo_within_endpoint(session_factory):
     async with session_factory() as s:
         batch2 = await claim_deliveries(s, worker_id="w1", limit=50)
     assert {d.id for d in batch2} == set(ids[3:])
+
+
+@pytest.mark.asyncio
+async def test_retuned_cap_takes_effect_on_next_claim(session_factory):
+    """Updating max_concurrent in place changes how many rows the very next claim
+    admits — no worker restart, because the cap is read live at claim time."""
+    app_id, _, ev_id = await _make_parents(session_factory)
+    ep_id = await _add_endpoint(session_factory, app_id, max_concurrent=2)
+    await _add_due(session_factory, ev_id, ep_id, 10)
+
+    async with session_factory() as s:
+        first = await claim_deliveries(s, worker_id="w1", limit=50)
+    assert len(first) == 2                       # original cap
+
+    # Raise the cap; release the in-flight rows so the new headroom is observable.
+    async with session_factory() as s:
+        ok = await management.set_endpoint_max_concurrent(
+            s, application_id=app_id, endpoint_id=ep_id, max_concurrent=5
+        )
+    assert ok
+    for d in first:
+        await _release_success(session_factory, d, "w1")
+
+    async with session_factory() as s:
+        second = await claim_deliveries(s, worker_id="w2", limit=50)
+    assert len(second) == 5                       # retuned cap, same worker session pool
 
 
 @pytest.mark.asyncio

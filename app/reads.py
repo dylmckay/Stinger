@@ -123,6 +123,26 @@ async def list_endpoints(session: AsyncSession, *, application_id: uuid.UUID) ->
     return [(ep, by_endpoint.get(ep.id, [])) for ep in endpoints]
 
 
+async def get_endpoint(
+    session: AsyncSession, *, application_id: uuid.UUID, endpoint_id: uuid.UUID
+) -> tuple[Endpoint, list[str]] | None:
+    """Fetch a single endpoint and its subscribed event-type names, tenant-scoped.
+    Returns None if the endpoint isn't found for this application."""
+    endpoint = await session.scalar(
+        select(Endpoint).where(
+            Endpoint.id == endpoint_id, Endpoint.application_id == application_id
+        )
+    )
+    if endpoint is None:
+        return None
+    type_names = list((await session.scalars(
+        select(EventType.name)
+        .join(EndpointEventType, EndpointEventType.event_type_id == EventType.id)
+        .where(EndpointEventType.endpoint_id == endpoint_id)
+    )).all())
+    return endpoint, type_names
+
+
 async def list_event_types(session: AsyncSession, *, application_id: uuid.UUID) -> list[EventType]:
     return list((await session.scalars(
         select(EventType).where(EventType.application_id == application_id).order_by(EventType.name)

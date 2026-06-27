@@ -247,6 +247,38 @@ async def rotate_ep(
     )
 
 
+@router.post("/endpoints/{endpoint_id}/max-concurrent")
+async def set_ep_max_concurrent(
+    request: Request,
+    endpoint_id: UUID,
+    max_concurrent: str = Form(""),
+    application: Application = Depends(current_application_web),
+    session: AsyncSession = Depends(get_session),
+    _csrf: None = Depends(verify_csrf),
+):
+    cap = max_concurrent.strip()
+    error = None
+    # Blank means "use the global default"; anything else must be a whole number.
+    try:
+        value = int(cap) if cap else None
+        ok = await management.set_endpoint_max_concurrent(
+            session, application_id=application.id, endpoint_id=endpoint_id,
+            max_concurrent=value,
+        )
+    except ValueError:
+        error = "Max concurrent deliveries must be a whole number."
+    except management.InvalidEndpointConfig as e:
+        error = str(e)
+    if error is None and not ok:
+        return Response(status_code=404)
+    card = await _load_card(session, application.id, endpoint_id)
+    if card is None:
+        return Response(status_code=404)
+    return request.app.state.templates.TemplateResponse(
+        request, "_endpoint_card.html", {"card": card, "edit_error": error}
+    )
+
+
 @router.post("/endpoints")
 async def create_endpoint_web(
     request: Request,

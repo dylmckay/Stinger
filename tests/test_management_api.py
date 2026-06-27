@@ -99,3 +99,93 @@ async def test_endpoint_requires_at_least_one_event_type(session_factory):
             headers=h,
         )
         assert r.status_code == 422        # Pydantic min_length=1
+
+
+async def _create_endpoint(c, h, *, cap=None):
+    await c.post("/api/v1/event-types", json={"name": "invoice.paid"}, headers=h)
+    body = {"url": "https://x.test/hook", "event_types": ["invoice.paid"]}
+    if cap is not None:
+        body["max_concurrent_deliveries"] = cap
+    r = await c.post("/api/v1/endpoints", json=body, headers=h)
+    assert r.status_code == 201
+    return r.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_endpoint_patch_max_concurrent(session_factory):
+    app_id = await _seed(session_factory)
+    h = {"Authorization": f"Bearer {await _key(session_factory, app_id)}"}
+    async with _client(session_factory) as c:
+        ep_id = await _create_endpoint(c, h, cap=5)
+        r = await c.patch(
+            f"/api/v1/endpoints/{ep_id}",
+            json={"max_concurrent_deliveries": 3},
+            headers=h,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["max_concurrent_deliveries"] == 3
+        assert body["event_types"] == ["invoice.paid"]      # full EndpointOut shape
+
+        lst = await c.get("/api/v1/endpoints", headers=h)
+        assert lst.json()["items"][0]["max_concurrent_deliveries"] == 3
+
+
+@pytest.mark.asyncio
+async def test_endpoint_patch_null_resets_to_default(session_factory):
+    app_id = await _seed(session_factory)
+    h = {"Authorization": f"Bearer {await _key(session_factory, app_id)}"}
+    async with _client(session_factory) as c:
+        ep_id = await _create_endpoint(c, h, cap=5)
+        r = await c.patch(
+            f"/api/v1/endpoints/{ep_id}",
+            json={"max_concurrent_deliveries": None},
+            headers=h,
+        )
+        assert r.status_code == 200
+        assert r.json()["max_concurrent_deliveries"] is None
+
+
+@pytest.mark.asyncio
+async def test_endpoint_patch_rejects_non_positive(session_factory):
+    app_id = await _seed(session_factory)
+    h = {"Authorization": f"Bearer {await _key(session_factory, app_id)}"}
+    async with _client(session_factory) as c:
+        ep_id = await _create_endpoint(c, h)
+        r = await c.patch(
+            f"/api/v1/endpoints/{ep_id}",
+            json={"max_concurrent_deliveries": 0},
+            headers=h,
+        )
+        assert r.status_code == 422        # Pydantic ge=1
+
+
+@pytest.mark.asyncio
+async def test_endpoint_patch_unknown_id_is_404(session_factory):
+    app_id = await _seed(session_factory)
+    h = {"Authorization": f"Bearer {await _key(session_factory, app_id)}"}
+    async with _client(session_factory) as c:
+        import uuid
+        r = await c.patch(
+            f"/api/v1/endpoints/{uuid.uuid4()}",
+            json={"max_concurrent_deliveries": 3},
+            headers=h,
+        )
+        assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_endpoint_patch_is_tenant_scoped(session_factory):
+    app_a = await _seed(session_factory, name="a")
+    app_b = await _seed(session_factory, name="b")
+    ha = {"Authorization": f"Bearer {await _key(session_factory, app_a)}"}
+    hb = {"Authorization": f"Bearer {await _key(session_factory, app_b)}"}
+    async with _client(session_factory) as c:
+        ep_id = await _create_endpoint(c, ha, cap=5)
+        # B must not be able to retune A's endpoint.
+        r = await c.patch(
+            f"/api/v1/endpoints/{ep_id}",
+            json={"max_concurrent_deliveries": 99},
+            headers=hb,
+        )
+        assert r.status_code == 404
