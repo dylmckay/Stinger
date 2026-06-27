@@ -589,8 +589,6 @@ Honest scope boundaries, listed so their absence reads as a decision:
 - **Time-window disable trigger.** The breaker counts *consecutive failures*,
   which couples the trip to traffic volume; a sustained-time-window trigger
   ("failing continuously for >1h") is more volume-robust but needs extra state.
-- **Editing an endpoint's cap after creation.** `max_concurrent_deliveries` is
-  set at creation only; there is no update endpoint yet to retune it in place.
 - **Payload transformations, fan-in/aggregation, and per-endpoint rate limiting**
   are out of scope by design.
 
