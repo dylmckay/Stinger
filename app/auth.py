@@ -36,8 +36,7 @@ def generate_api_key() -> tuple[str, str, str]:
     return full, full[:_DISPLAY_LEN], _hash(full)
 
 
-async def create_api_key(
-    session: AsyncSession, *, application_id: uuid.UUID, name: str | None = None) -> tuple[str, ApiKey]:
+async def create_api_key(session: AsyncSession, *, application_id: uuid.UUID, name: str | None = None) -> tuple[str, ApiKey]:
     """Mint a key for an application. The returned full key is unrecoverable later."""
     full, prefix, key_hash = generate_api_key()
     row = ApiKey(application_id=application_id, key_hash=key_hash, prefix=prefix, name=name)
