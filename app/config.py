@@ -1,7 +1,7 @@
 from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from functools import lru_cache
+from functools import cache
 
 _env_file = Path(__file__).resolve().parents[1] / ".env"
 
@@ -33,6 +33,6 @@ class Settings(BaseSettings):
     def encryption_key_material(self) -> bytes:
         return encryption_key_material()
 
-@lru_cache
+@cache
 def get_settings() -> Settings:
     return Settings()
